@@ -1,0 +1,9 @@
+llm:
+  provider: openai   # openai or deepseek
+  model_name: gpt-4.1-mini
+  temperature: 0.2
+  max_output_tokens: 2000
+
+api:
+  openai_api_key: ${OPENAI_API_KEY}
+  deepseek_api_key: ${DEEPSEEK_API_KEY}
