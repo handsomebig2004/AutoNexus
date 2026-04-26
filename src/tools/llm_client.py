@@ -4,8 +4,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 class LLMClient:
     """Unified LLM client for OpenAI and DeepSeek-backed agents."""
@@ -64,6 +62,13 @@ class LLMClient:
         raise ValueError(f"Unsupported provider: {self.provider}")
 
     def _load_config(self, path: Path) -> dict[str, Any]:
+        try:
+            import yaml
+        except ImportError as exc:
+            raise ImportError(
+                "The pyyaml package is required. Install it with: pip install pyyaml"
+            ) from exc
+
         if not path.exists():
             raise FileNotFoundError(f"Config file not found: {path}")
 
