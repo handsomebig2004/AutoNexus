@@ -1,9 +1,9 @@
 llm:
-  provider: openai   # openai or deepseek
-  model_name: gpt-4.1-mini
-  temperature: 0.2
+  provider: deepseek   # openai or deepseek
+  model_name: # if provider is openai, default is gpt-5-nano; if provider is deepseek, default is deepseek-v4-flash
+  temperature: 0.2  # if model does not support temperature, the request will retry without it
   max_output_tokens: 2000
 
 api:
   openai_api_key: ${OPENAI_API_KEY}
-  deepseek_api_key: ${DEEPSEEK_API_KEY}
+  deepseek_api_key: ${DEEPSEEK_API_KEY} # set $env:DEEPSEEK_API_KEY = "<API_KEY>" in your environment variables

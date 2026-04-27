@@ -4,17 +4,19 @@ import os
 from pathlib import Path
 from typing import Any
 
+from src.utils.config import get_config_section, load_config
+
 
 class LLMClient:
     """Unified LLM client for OpenAI and DeepSeek-backed agents."""
 
     def __init__(self, config_path: str | Path = "config/settings.yaml") -> None:
         self.config_path = Path(config_path)
-        self.config = self._load_config(self.config_path)
+        self.config = load_config(self.config_path)
 
-        llm_config = self.config.get("llm", {})
+        llm_config = get_config_section(self.config, "llm")
         self.provider = str(llm_config.get("provider", "openai")).lower()
-        self.model_name = llm_config.get("model_name", "gpt-4.1-mini")
+        self.model_name = self._resolve_model_name(llm_config.get("model_name"))
         self.temperature = llm_config.get("temperature", 0.2)
         self.max_output_tokens = llm_config.get("max_output_tokens", 2000)
         self.system_prompt = llm_config.get(
@@ -23,6 +25,19 @@ class LLMClient:
         )
 
         self.client = self._build_client()
+
+    def _resolve_model_name(self, model_name: Any) -> str:
+        if model_name is not None and str(model_name).strip():
+            return str(model_name).strip()
+
+        default_models = {
+            "openai": "gpt-5-nano",
+            "deepseek": "deepseek-v4-flash",
+        }
+        try:
+            return default_models[self.provider]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported provider: {self.provider}") from exc
 
     def generate(
         self,
@@ -61,35 +76,6 @@ class LLMClient:
 
         raise ValueError(f"Unsupported provider: {self.provider}")
 
-    def _load_config(self, path: Path) -> dict[str, Any]:
-        try:
-            import yaml
-        except ImportError as exc:
-            raise ImportError(
-                "The pyyaml package is required. Install it with: pip install pyyaml"
-            ) from exc
-
-        if not path.exists():
-            raise FileNotFoundError(f"Config file not found: {path}")
-
-        with path.open("r", encoding="utf-8") as file:
-            raw_config = yaml.safe_load(file) or {}
-
-        return self._resolve_env_vars(raw_config)
-
-    def _resolve_env_vars(self, value: Any) -> Any:
-        if isinstance(value, dict):
-            return {key: self._resolve_env_vars(item) for key, item in value.items()}
-
-        if isinstance(value, list):
-            return [self._resolve_env_vars(item) for item in value]
-
-        if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
-            env_name = value[2:-1]
-            return os.getenv(env_name, "")
-
-        return value
-
     def _build_client(self) -> Any:
         try:
             from openai import OpenAI
@@ -98,7 +84,7 @@ class LLMClient:
                 "The openai package is required. Install it with: pip install openai"
             ) from exc
 
-        api_config = self.config.get("api", {})
+        api_config = get_config_section(self.config, "api")
 
         if self.provider == "openai":
             api_key = api_config.get("openai_api_key") or os.getenv("OPENAI_API_KEY")
@@ -118,17 +104,21 @@ class LLMClient:
         self,
         prompt: str,
         system_prompt: str,
-        temperature: float,
+        temperature: float | None,
         max_output_tokens: int,
     ) -> str:
-        response = self.client.responses.create(
-            model=self.model_name,
-            input=[
+        request_params = {
+            "model": self.model_name,
+            "input": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
+            "max_output_tokens": max_output_tokens,
+        }
+        response = self._create_response_with_optional_temperature(
+            create_fn=self.client.responses.create,
+            request_params=request_params,
             temperature=temperature,
-            max_output_tokens=max_output_tokens,
         )
 
         if getattr(response, "output_text", None):
@@ -143,18 +133,22 @@ class LLMClient:
         self,
         prompt: str,
         system_prompt: str,
-        temperature: float,
+        temperature: float | None,
         max_output_tokens: int,
     ) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
+        request_params = {
+            "model": self.model_name,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
+            "max_tokens": max_output_tokens,
+            "stream": False,
+        }
+        response = self._create_response_with_optional_temperature(
+            create_fn=self.client.chat.completions.create,
+            request_params=request_params,
             temperature=temperature,
-            max_tokens=max_output_tokens,
-            stream=False,
         )
 
         try:
@@ -162,3 +156,33 @@ class LLMClient:
             return content.strip()
         except (AttributeError, IndexError, TypeError) as exc:
             raise RuntimeError("Failed to parse DeepSeek response text.") from exc
+
+    def _create_response_with_optional_temperature(
+        self,
+        create_fn: Any,
+        request_params: dict[str, Any],
+        temperature: float | None,
+    ) -> Any:
+        if temperature is None:
+            return create_fn(**request_params)
+
+        try:
+            return create_fn(**request_params, temperature=temperature)
+        except Exception as exc:
+            if self._is_unsupported_temperature_error(exc):
+                return create_fn(**request_params)
+            raise
+
+    def _is_unsupported_temperature_error(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        unsupported_markers = [
+            "unsupported parameter",
+            "not supported",
+            "does not support",
+            "unknown parameter",
+            "unrecognized request argument",
+            "only the default",
+        ]
+        return "temperature" in message and any(
+            marker in message for marker in unsupported_markers
+        )

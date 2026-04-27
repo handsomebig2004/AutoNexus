@@ -1,2 +1,6 @@
 rubbish
 others
+config/settings.yaml
+tasks
+__pycache__/
+.vscode

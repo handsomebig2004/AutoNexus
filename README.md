@@ -45,3 +45,28 @@ src/tools是一些需要和外部连接/执行代码的函数/类之类的，后
 src/utils是一些在agent或tools之间复用的小函数
 
 后面迭代agent的记忆之类的可以在这里建一个memory文件夹之类的
+
+Data Agent 需要的 Tools
+
+Tool	建议文件	作用
+数据读取工具	src/tools/data_loader.py	统一读取 csv/xlsx/json/parquet，返回 DataFrame 和基础信息
+数据概览工具	src/tools/data_profiler.py	统计行列数、字段类型、缺失率、唯一值、样例值、标签分布 这个是researchagent 调用的，总结一下数据集的大概
+Schema 推断工具	src/tools/schema_infer.py	推断字段类型：数值、类别、文本、时间、ID、标签列候选（感觉这个应该不用）
+数据质量检查工具	src/tools/data_quality.py	检查重复行、常量列、高缺失列、异常值、类别过多、数据泄漏风险
+预处理代码生成辅助	src/tools/code_writer.py	把 LLM 输出的 preprocess.py 安全写入 run 目录
+预处理代码校验工具	src/tools/code_validator.py	检查生成脚本是否有规定入口函数、危险导入、危险系统调用 校验可以晚一点再写
+预处理代码运行工具	src/tools/code_runner.py	在指定 run 目录运行 preprocess.py，捕获 stdout/stderr/退出码
+产物管理工具	src/tools/artifact_manager.py	管理 processed data、feature report、preprocessor、日志路径
+数据切分工具	src/tools/splitter.py	提供标准 train/val/test split，支持分类 stratify
+特征报告工具	src/tools/feature_report.py	生成 feature_report.json，给 train_agent 使用
+Data Agent 需要的 Utils
+
+Util	建议文件	作用
+路径工具	src/utils/paths.py	统一生成 task_xxx/runs/run_xxx/... 路径
+配置读取	src/utils/config.py	读取 settings.yaml、agent 配置、默认参数
+JSON/YAML IO	src/utils/io.py	读写 json/yaml/txt/md，避免各处重复
+日志工具	src/utils/logging.py	统一记录 agent 调用、脚本执行日志
+文本格式工具	src/utils/text.py	清理 LLM 输出，比如提取 ```python 代码块、提取 JSON
+哈希/版本工具	src/utils/hash.py	记录原始数据 hash、脚本 hash，方便复现
+错误类型	src/utils/errors.py	定义 DataValidationError、GeneratedCodeError 等
+时间/命名工具	src/utils/naming.py

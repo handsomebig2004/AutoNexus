@@ -6,6 +6,8 @@ from typing import Any
 
 import pandas as pd
 
+from src.utils.config import get_config_section, load_config
+
 
 SUPPORTED_TABLE_EXTENSIONS = {
     ".csv",
@@ -89,6 +91,40 @@ def load_table(
 
     metadata = build_table_metadata(data_path, dataframe)
     return LoadedTable(dataframe=dataframe, metadata=metadata)
+
+
+def load_table_from_config(
+    config_path: str | Path = "config/settings.yaml",
+    *,
+    section: str = "data",
+    path_key: str = "path",
+    **read_kwargs: Any,
+) -> LoadedTable:
+    """
+    Load a table using a path stored in a YAML config section.
+
+    Example
+    -------
+    data:
+      path: tasks/task_001/data/raw/train.csv
+      encoding: utf-8
+    """
+    config = load_config(config_path)
+    data_config = get_config_section(config, section)
+
+    data_path = data_config.get(path_key)
+    if not data_path:
+        raise ValueError(
+            f"Missing data path in config section '{section}' with key '{path_key}'."
+        )
+
+    loader_kwargs = {
+        key: value
+        for key, value in data_config.items()
+        if key not in {path_key, "path", "raw_path"}
+    }
+    loader_kwargs.update(read_kwargs)
+    return load_table(data_path, **loader_kwargs)
 
 
 def build_table_metadata(path: str | Path, dataframe: pd.DataFrame) -> dict[str, Any]:
