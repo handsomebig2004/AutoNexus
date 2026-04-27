@@ -48,7 +48,7 @@ src/utils是一些在agent或tools之间复用的小函数
 
 Data Agent 需要的 Tools
 
-Tool	建议文件	作用
+Tool	文件	作用
 数据读取工具	src/tools/data_loader.py	统一读取 csv/xlsx/json/parquet，返回 DataFrame 和基础信息
 数据概览工具	src/tools/data_profiler.py	统计行列数、字段类型、缺失率、唯一值、样例值、标签分布 这个是researchagent 调用的，总结一下数据集的大概
 Schema 推断工具	src/tools/schema_infer.py	推断字段类型：数值、类别、文本、时间、ID、标签列候选（感觉这个应该不用）
@@ -61,8 +61,8 @@ Schema 推断工具	src/tools/schema_infer.py	推断字段类型：数值、类�
 特征报告工具	src/tools/feature_report.py	生成 feature_report.json，给 train_agent 使用
 Data Agent 需要的 Utils
 
-Util	建议文件	作用
-路径工具	src/utils/paths.py	统一生成 task_xxx/runs/run_xxx/... 路径
+Util	文件	作用
+路径工具	src/utils/numbered_paths.py 创建path/prefix_xxx文件夹，扫描输入路径下已有的 prefix_xxx 文件夹，找最大编号，创建下一个编号目录，用 filelock 防止并发重复，返回已经创建好的 Path
 配置读取	src/utils/config.py	读取 settings.yaml、agent 配置、默认参数
 JSON/YAML IO	src/utils/io.py	读写 json/yaml/txt/md，避免各处重复
 日志工具	src/utils/logging.py	统一记录 agent 调用、脚本执行日志
@@ -70,3 +70,21 @@ JSON/YAML IO	src/utils/io.py	读写 json/yaml/txt/md，避免各处重复
 哈希/版本工具	src/utils/hash.py	记录原始数据 hash、脚本 hash，方便复现
 错误类型	src/utils/errors.py	定义 DataValidationError、GeneratedCodeError 等
 时间/命名工具	src/utils/naming.py
+
+errors.py
+  只定义错误类型
+
+llm_client.py
+  捕获 API 错误，转成 LLMError
+
+schema_parser.py / agent.py
+  捕获解析失败，转成 LLMOutputParseError
+
+code_validator.py
+  检查生成代码，失败时抛 GeneratedCodeValidationError
+
+code_runner.py
+  脚本运行失败，抛 GeneratedCodeExecutionError
+
+pipeline/runner.py
+  根据错误类型决定怎么处理
