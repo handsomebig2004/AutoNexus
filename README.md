@@ -94,7 +94,7 @@ tasks/
 | --- | --- | --- |
 | ~~路径工具~~ | `src/utils/numbered_paths.py` | 创建 `path/prefix_xxx` 目录：扫描已有编号，取最大编号并创建下一个目录；使用 `filelock` 防止并发重复，返回已创建好的 `Path`。 |
 | ~~配置读取~~ | `src/utils/config.py` | 读取 `settings.yaml`及其中的Agent 配置和默认参数。 |
-| JSON/YAML IO | `src/utils/io.py` | 统一读写 `json`、`yaml`、`txt`、`md`，避免各处重复实现。 |
+| ~~JSON/YAML IO~~ | `src/utils/io.py` | 统一读写 `json`、`yaml`、`txt`、`md`，避免各处重复实现。 |
 | 日志工具 | `src/utils/logging.py` | 统一记录 Agent 调用日志和脚本执行日志。 |
 | 文本格式工具 | `src/utils/text.py` | 清理 LLM 输出，例如从回复中提取 Python 代码块或 JSON。 |
 | 哈希/版本工具 | `src/utils/hash.py` | 记录原始数据 hash 和脚本 hash，方便复现。 |

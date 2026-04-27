@@ -23,22 +23,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+from src.utils.io import read_yaml
+
 
 def load_config(config_path: str | Path = "config/settings.yaml") -> dict[str, Any]:
     """Load a YAML config file and resolve ${ENV_VAR} style values."""
     path = Path(config_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
-
-    try:
-        import yaml
-    except ImportError as exc:
-        raise ImportError(
-            "The pyyaml package is required. Install it with: pip install pyyaml"
-        ) from exc
-
-    with path.open("r", encoding="utf-8") as file:
-        raw_config = yaml.safe_load(file) or {}
+    raw_config = read_yaml(path) or {}
 
     if not isinstance(raw_config, dict):
         raise ValueError(f"Config file must contain a YAML mapping: {path}")
