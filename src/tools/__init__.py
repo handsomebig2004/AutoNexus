@@ -1,4 +1,17 @@
-"""Reusable tool integrations for agents."""
+"""Reusable tool package exports.
+
+What this file does:
+    Exposes convenient imports for tool functions used by agents.
+
+How it works:
+    Uses __getattr__ for lazy loading so importing src.tools does not
+    immediately import heavier optional dependencies such as pandas.
+
+How to call it:
+    from src.tools import load_table
+
+    loaded = load_table("tasks/task_0/data/raw/train.csv")
+"""
 
 __all__ = [
     "LoadedTable",

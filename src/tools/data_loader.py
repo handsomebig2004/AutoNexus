@@ -1,3 +1,23 @@
+"""Tabular data loading tool.
+
+What this file does:
+    Loads common tabular data files into pandas DataFrames and returns both the
+    data and lightweight metadata that can be passed to data_agent prompts.
+
+How it works:
+    load_table() chooses the correct pandas reader from the file extension,
+    validates the path, reads the file, and builds a metadata dictionary with
+    shape, columns, dtypes, file size, and memory usage. load_table_from_config()
+    reuses src.utils.config to read a data path from YAML.
+
+How to call it:
+    from src.tools.data_loader import load_table
+
+    loaded = load_table("tasks/task_0/data/raw/train.csv")
+    df = loaded.dataframe
+    metadata = loaded.metadata
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

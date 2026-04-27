@@ -1,3 +1,22 @@
+"""Configuration loading utilities.
+
+What this file does:
+    Provides shared helpers for reading YAML config files and resolving values
+    such as ${OPENAI_API_KEY} from environment variables.
+
+How it works:
+    load_config() reads a YAML file as a dictionary, validates that the top
+    level is a mapping, then recursively replaces ${ENV_VAR} strings with the
+    matching environment variable value. get_config_section() is a small guard
+    that keeps callers from accidentally treating a non-dict section as config.
+
+How to call it:
+    from src.utils.config import load_config, get_config_section
+
+    config = load_config("config/settings.yaml")
+    llm_config = get_config_section(config, "llm")
+"""
+
 from __future__ import annotations
 
 import os

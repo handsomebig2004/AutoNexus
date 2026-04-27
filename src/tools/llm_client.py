@@ -1,3 +1,23 @@
+"""LLM API client tool.
+
+What this file does:
+    Provides one unified class, LLMClient, for calling external LLM providers
+    used by agents. It currently supports OpenAI and DeepSeek.
+
+How it works:
+    LLMClient reads config/settings.yaml through src.utils.config, selects the
+    provider, resolves the model name, builds an OpenAI-compatible SDK client,
+    and exposes generate(prompt). OpenAI uses the Responses API; DeepSeek uses
+    the OpenAI-compatible chat completions API. If a model rejects temperature,
+    the request is retried once without temperature.
+
+How to call it:
+    from src.tools.llm_client import LLMClient
+
+    client = LLMClient()
+    text = client.generate("用一句话说明你是否能正常工作。")
+"""
+
 from __future__ import annotations
 
 import os

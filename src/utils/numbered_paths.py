@@ -1,3 +1,22 @@
+"""Concurrent-safe numbered directory creation utilities.
+
+What this file does:
+    Creates directories named like path/prefix_0, path/prefix_1, or
+    path/prefix_136. This is useful for task and run directories.
+
+How it works:
+    create_numbered_directory() scans existing child directories matching
+    prefix_<number>, finds the largest number, and creates the next directory.
+    A filelock stored in the parent directory prevents concurrent processes
+    from creating the same numbered path.
+
+How to call it:
+    from src.utils.numbered_paths import create_numbered_directory
+
+    task_dir = create_numbered_directory("tasks", "task")
+    run_dir = create_numbered_directory(task_dir / "runs", "run")
+"""
+
 from __future__ import annotations
 
 import re

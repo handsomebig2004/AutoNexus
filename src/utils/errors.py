@@ -1,3 +1,20 @@
+"""Project-specific error types.
+
+What this file does:
+    Defines the exception hierarchy used by agents, tools, generated-code
+    runners, and the pipeline. These classes make failures easy to classify.
+
+How it works:
+    Each error is a lightweight subclass of AutoNexusError. The classes do not
+    retry, log, or repair anything themselves; callers raise these errors and
+    the pipeline decides how to handle them.
+
+How to call it:
+    from src.utils.errors import LLMOutputParseError
+
+    raise LLMOutputParseError("Requirement agent returned invalid JSON.")
+"""
+
 class AutoNexusError(Exception):
     """Base error for the AutoNMD pipeline."""
 
