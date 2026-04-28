@@ -14,6 +14,7 @@ How to call it:
 
 from .config import get_config_section, load_config, resolve_env_vars
 from .io import (
+    append_jsonl,
     read_json,
     read_markdown,
     read_text,
@@ -23,18 +24,33 @@ from .io import (
     write_text,
     write_yaml,
 )
+from .log_events import (
+    EventTimer,
+    build_error_data,
+    build_error_event,
+    build_log_event,
+    current_timestamp,
+)
 from .numbered_paths import (
     create_numbered_directory,
     create_run_directory,
     create_task_directory,
     find_max_numbered_path,
 )
+from .run_logger import RunLogger
+from .task_logger import TaskLogger
 
 __all__ = [
+    "append_jsonl",
     "create_numbered_directory",
     "create_run_directory",
     "create_task_directory",
+    "current_timestamp",
+    "EventTimer",
     "find_max_numbered_path",
+    "build_error_data",
+    "build_error_event",
+    "build_log_event",
     "get_config_section",
     "load_config",
     "read_json",
@@ -42,6 +58,8 @@ __all__ = [
     "read_text",
     "read_yaml",
     "resolve_env_vars",
+    "RunLogger",
+    "TaskLogger",
     "write_json",
     "write_markdown",
     "write_text",

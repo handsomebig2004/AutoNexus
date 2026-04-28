@@ -11,11 +11,11 @@ How it works:
     called. Write helpers create parent directories before writing.
 
 How to call it:
-    from src.utils.io import read_json, write_json, read_yaml, write_text
+    from src.utils.io import append_jsonl, read_json, write_json, read_yaml
 
     config = read_yaml("config/settings.yaml")
     write_json("tasks/task_0/runs/run_0/metadata/metrics.json", {"acc": 0.9})
-    write_text("tasks/task_0/runs/run_0/reports/summary.md", "# Summary")
+    append_jsonl("tasks/task_0/logs/task.jsonl", {"event": "task_created"})
 """
 
 from __future__ import annotations
@@ -81,6 +81,22 @@ def write_json(
     """Write data to a JSON file, creating parent directories if needed."""
     content = json.dumps(data, indent=indent, ensure_ascii=ensure_ascii)
     return write_text(path, content + "\n", encoding=encoding)
+
+
+def append_jsonl(
+    path: str | Path,
+    record: dict[str, Any],
+    *,
+    encoding: str = "utf-8",
+    ensure_ascii: bool = False,
+) -> Path:
+    """Append one JSON object as one line to a JSONL file."""
+    file_path = Path(path)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=ensure_ascii)
+    with file_path.open("a", encoding=encoding) as file:
+        file.write(line + "\n")
+    return file_path
 
 
 def read_yaml(path: str | Path, *, encoding: str = "utf-8") -> Any:

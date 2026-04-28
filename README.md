@@ -72,7 +72,7 @@ tasks/
 
 ## 工具规划
 
-只考虑了 `data_agent`，其他的后面再说
+只考虑了 `data_agent`，其他的后面再说（划掉的是目前已实现的）
 
 | Tool | 文件 | 作用 |
 | --- | --- | --- |
@@ -99,7 +99,7 @@ tasks/
 | 文本格式工具 | `src/utils/text.py` | 清理 LLM 输出，例如从回复中提取 Python 代码块或 JSON。 |
 | 哈希/版本工具 | `src/utils/hash.py` | 记录原始数据 hash 和脚本 hash，方便复现。 |
 | ~~错误类型定义~~ | `src/utils/errors.py` | 定义 `DataValidationError`、`GeneratedCodeError` 等异常类型。 |
-| 时间/命名工具 | `src/utils/naming.py` | 管理时间戳、运行名、文件名等命名逻辑。 |
+| ~~日志事件/内容生成~~ | `src/utils/log_events.py` | 生成日志事件里需要的结构化信息。 |
 
 ## 错误处理规划
 
@@ -113,3 +113,250 @@ tasks/
 | `src/tools/code_validator.py` | 检查生成代码，失败时抛出 `GeneratedCodeValidationError`。 |
 | `src/tools/code_runner.py` | 脚本运行失败时抛出 `GeneratedCodeExecutionError`。 |
 | `pipeline/runner.py` | 根据错误类型决定重试、终止、降级或继续执行。 |
+
+## 日志说明
+
+日志系统采用 JSONL 格式，即一行一个 JSON 对象。这样既可以直接打开查看，也方便后续用程序统计、筛选和生成实验报告。
+
+当前日志分为三类：
+
+```text
+tasks/
+└── task_xxx/
+    ├── logs/
+    │   ├── task.jsonl        # task 级摘要日志
+    │   └── llm_calls.jsonl   # LLM 完整调用日志
+    └── runs/
+        └── run_xxx/
+            └── logs/
+                └── run.jsonl # run 级执行日志
+```
+
+三类日志的职责不同：
+
+| 日志文件 | 粒度 | 主要用途 |
+| --- | --- | --- |
+| `task.jsonl` | 整个任务 | 记录任务级时间线、Agent 开始/结束、run 创建/完成、错误摘要、最优方案等。 |
+| `llm_calls.jsonl` | LLM 调用 | 记录完整 prompt、system prompt、response、模型、provider、token 使用量和错误信息。 |
+| `run.jsonl` | 单个 run | 记录某一个模型方案的代码生成、代码校验、预处理、训练、评估、指标和产物。 |
+
+### 通用日志格式
+
+`task.jsonl` 和 `run.jsonl` 都使用统一事件结构：
+
+```json
+{
+  "time": "2026-04-28T12:00:00+08:00",
+  "level": "INFO",
+  "event": "agent_finished",
+  "task_id": "task_0",
+  "run_id": "run_0",
+  "agent": "data_agent",
+  "message": "Data agent finished.",
+  "data": {
+    "duration_seconds": 3.42,
+    "output_path": "tasks/task_0/runs/run_0/metadata/feature_report.json"
+  }
+}
+```
+
+字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `time` | 带时区的 ISO 时间戳。 |
+| `level` | 日志级别：`DEBUG`、`INFO`、`WARNING`、`ERROR`、`CRITICAL`。 |
+| `event` | 机器可读的事件名，例如 `agent_finished`、`train_failed`。 |
+| `task_id` | 当前任务编号，例如 `task_0`。 |
+| `run_id` | 当前 run 编号；task 级事件如果不属于某个 run，可以为 `null`。 |
+| `agent` | 产生事件的 Agent，例如 `data_agent`、`train_agent`。 |
+| `message` | 给人看的简短说明。 |
+| `data` | 结构化附加信息，例如路径、指标、耗时、错误类型等。 |
+
+### task 级摘要日志：`task.jsonl`
+
+路径：
+
+```text
+tasks/task_xxx/logs/task.jsonl
+```
+
+`task.jsonl` 只记录摘要，不保存完整 prompt 或完整模型回复。它用于快速了解一个 task 从创建到结束发生了什么。
+
+建议记录内容：
+
+| 类型 | 事件名示例 | 记录内容 |
+| --- | --- | --- |
+| task 生命周期 | `task_created`、`task_started`、`task_finished`、`task_failed` | task 创建、开始、结束、失败原因。 |
+| Agent 生命周期 | `agent_started`、`agent_finished`、`agent_failed` | 哪个 Agent 开始/结束、耗时、输出文件路径、错误摘要。 |
+| LLM 调用摘要 | `llm_call_finished`、`llm_call_failed` | `llm_call_id`、provider、model、status、token 使用量。 |
+| run 管理 | `run_created`、`run_started`、`run_finished`、`run_failed` | 创建了哪些 run、每个 run 是否成功、失败位置。 |
+| 结果汇总 | `best_run_selected`、`task_report_written` | 最优 run、关键指标、最终报告路径。 |
+
+示例：
+
+```json
+{"time":"2026-04-28T12:00:00+08:00","level":"INFO","event":"run_finished","task_id":"task_0","run_id":"run_1","agent":"evaluation_agent","message":"Run finished.","data":{"accuracy":0.91,"metrics_path":"tasks/task_0/runs/run_1/metadata/metrics.json"}}
+```
+
+用途：
+
+- 快速查看 task 整体进展。
+- 判断失败发生在哪个 Agent 或哪个 run。
+- 汇总多个 run 的最终状态。
+- 为后续自动生成 task 总结报告提供结构化依据。
+
+对应工具：
+
+```python
+from src.utils import TaskLogger
+
+logger = TaskLogger("tasks/task_0")
+logger.info("task_created", message="Task created.")
+logger.info("run_created", run_id="run_0", data={"model": "random_forest"})
+```
+
+### LLM 完整调用日志：`llm_calls.jsonl`
+
+路径：
+
+```text
+tasks/task_xxx/logs/llm_calls.jsonl
+```
+
+`llm_calls.jsonl` 用来保存完整 LLM 调用记录。它和 `task.jsonl` 分开，是因为 prompt 和 response 可能很长；如果全部塞进 `task.jsonl`，会让 task 摘要变得难读。
+
+建议记录内容：
+
+| 字段 | 含义 |
+| --- | --- |
+| `llm_call_id` | 本次 LLM 调用的唯一编号，例如 `llm_0001`。 |
+| `task_id` | 所属 task。 |
+| `run_id` | 如果这次调用属于某个 run，就记录 run 编号。 |
+| `agent` | 调用 LLM 的 Agent。 |
+| `provider` | 例如 `openai`、`deepseek`。 |
+| `model` | 实际使用的模型名。 |
+| `status` | `success` 或 `failed`。 |
+| `system_prompt` | 完整 system prompt。 |
+| `prompt` | 完整 user prompt。 |
+| `response` | 完整模型输出。 |
+| `error` | 失败时的错误类型和错误消息。 |
+| `usage` | token 使用量、耗时等可选信息。 |
+| `metadata` | 其他辅助信息，例如 prompt 模板版本、schema 名称。 |
+
+示例：
+
+```json
+{"time":"2026-04-28T12:00:00+08:00","llm_call_id":"llm_0001","task_id":"task_0","run_id":"run_0","agent":"data_agent","provider":"deepseek","model":"deepseek-v4-flash","status":"success","system_prompt":"...","prompt":"...","response":"...","error":null,"usage":{"input_tokens":1200,"output_tokens":800},"metadata":{"schema":"PreprocessPlan"}}
+```
+
+用途：
+
+- 复盘某个 Agent 当时为什么做出某个决策。
+- 调试 LLM 输出格式错误、代码生成错误、幻觉问题。
+- 比较不同 prompt 或模型版本的输出质量。
+- 为后续 prompt 优化和 Agent 迭代提供数据。
+
+对应工具：
+
+```python
+from src.utils import TaskLogger
+
+logger = TaskLogger("tasks/task_0")
+logger.log_llm_call(
+    llm_call_id="llm_0001",
+    agent="data_agent",
+    provider="deepseek",
+    model="deepseek-v4-flash",
+    prompt="...",
+    response="...",
+    run_id="run_0",
+)
+```
+
+调用 `log_llm_call()` 时，默认会同时向 `task.jsonl` 写入一条简短摘要 `llm_call_finished`，完整内容仍然只保存在 `llm_calls.jsonl`。
+
+### run 级执行日志：`run.jsonl`
+
+路径：
+
+```text
+tasks/task_xxx/runs/run_xxx/logs/run.jsonl
+```
+
+`run.jsonl` 记录某一个模型方案的执行细节。它不保存完整 LLM prompt/response，只记录这个 run 的代码、数据、训练、评估和产物状态。
+
+建议记录内容：
+
+| 类型 | 事件名示例 | 记录内容 |
+| --- | --- | --- |
+| run 生命周期 | `run_created`、`run_started`、`run_finished`、`run_failed` | run 状态、耗时、失败原因。 |
+| 方案信息 | `model_plan_loaded` | 模型名称、模型类型、超参数、方案来源。 |
+| 代码生成 | `generated_code_written` | `preprocess.py`、`train.py`、`evaluate.py` 路径和 hash。 |
+| 代码校验 | `generated_code_validated`、`generated_code_validation_failed` | 入口函数、危险导入、危险系统调用检查结果。 |
+| 预处理 | `preprocess_started`、`preprocess_finished`、`preprocess_failed` | 输入数据路径、输出数据路径、样本数量、特征数量、耗时。 |
+| 训练 | `train_started`、`train_finished`、`train_failed` | 模型文件路径、训练耗时、最佳参数、验证集指标。 |
+| 评估 | `evaluate_started`、`evaluate_finished`、`evaluate_failed` | 测试集指标、评估报告路径、图表路径。 |
+| 产物 | `artifact_written` | 模型、数据、图、报告、metrics 文件路径。 |
+| 指标 | `metric_recorded` | accuracy、f1、rmse、auc 等指标。 |
+| 错误 | `script_failed`、`run_failed` | 错误类型、错误消息、是否可重试。 |
+
+示例：
+
+```json
+{"time":"2026-04-28T12:00:00+08:00","level":"INFO","event":"train_finished","task_id":"task_0","run_id":"run_0","agent":"train_agent","message":"Training finished.","data":{"model_path":"tasks/task_0/runs/run_0/artifacts/models/model.pkl","duration_seconds":42.18,"metrics":{"accuracy":0.91,"f1":0.89}}}
+```
+
+用途：
+
+- 精确复盘某个模型方案是如何执行的。
+- 定位失败发生在预处理、训练、评估还是代码校验阶段。
+- 记录每个 run 的模型文件、数据文件、报告文件和指标文件。
+- 后续自动比较多个 run，生成实验表格或最优方案报告。
+
+对应工具：
+
+```python
+from src.utils import RunLogger
+
+logger = RunLogger("tasks/task_0/runs/run_0")
+logger.info("run_started", agent="train_agent")
+logger.generated_code_written("preprocess", "generated/preprocess.py", agent="data_agent")
+logger.artifact_written("model", "artifacts/models/model.pkl", agent="train_agent")
+logger.metric_recorded({"accuracy": 0.91, "f1": 0.89}, split="test")
+```
+
+### 三类日志如何配合
+
+三类日志通过 `task_id`、`run_id` 和 `llm_call_id` 关联：
+
+```text
+task.jsonl
+  看到 run_0 的 data_agent 调用了一次 LLM：llm_call_id=llm_0001
+
+llm_calls.jsonl
+  用 llm_call_id=llm_0001 找到完整 prompt 和 response
+
+run.jsonl
+  用 run_id=run_0 查看该模型方案后续代码生成、预处理、训练、评估过程
+```
+
+推荐排查顺序：
+
+1. 先看 `task.jsonl`，判断整个任务在哪一步失败。
+2. 如果失败和某个 run 有关，再看对应 `runs/run_xxx/logs/run.jsonl`。
+3. 如果失败和 LLM 输出有关，再用 `llm_call_id` 查 `llm_calls.jsonl`。
+4. 如果失败和脚本运行有关，后续可再查看 `preprocess.stdout.log`、`train.stderr.log` 等脚本级日志。
+
+### 当前已实现的日志相关工具
+
+| 工具 | 文件 | 作用 |
+| --- | --- | --- |
+| `build_log_event()` | `src/utils/log_events.py` | 生成统一结构的日志事件。 |
+| `build_error_event()` | `src/utils/log_events.py` | 根据异常生成统一结构的错误事件。 |
+| `EventTimer` | `src/utils/log_events.py` | 记录 Agent、run 或脚本执行耗时。 |
+| `append_jsonl()` | `src/utils/io.py` | 向 JSONL 文件追加一条 JSON 记录。 |
+| `TaskLogger` | `src/utils/task_logger.py` | 写入 `task.jsonl` 和 `llm_calls.jsonl`。 |
+| `RunLogger` | `src/utils/run_logger.py` | 写入某个 run 的 `run.jsonl`。 |
+
+
