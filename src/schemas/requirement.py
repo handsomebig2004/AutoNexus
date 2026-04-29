@@ -5,9 +5,9 @@ What this file does:
     translating a natural-language user request into a modeling task.
 
 How it works:
-    Pydantic validates that task_type is one of the supported task categories.
-    If task_type is unknown, should_model is forced to False so the downstream
-    pipeline can return the task to the user instead of attempting modeling.
+    Pydantic validates that task_type is one of the supported task categories
+    and that decision controls whether the pipeline can continue. Only accepted
+    tasks are modelable. need_info and rejected tasks are returned to the user.
 
 How to call it:
     from src.schemas.requirement import TaskDefinition
@@ -28,6 +28,12 @@ TaskType = Literal[
     "forecasting",
     "clustering",
     "unknown",
+]
+
+RequirementDecision = Literal[
+    "accepted",
+    "need_info",
+    "rejected",
 ]
 
 DataType = Literal[
@@ -114,6 +120,7 @@ class TaskDefinition(BaseModel):
 
     task_name: str
     task_type: TaskType
+    decision: RequirementDecision
     should_model: bool
     problem_statement: str
     input_mode: InputMode
@@ -134,14 +141,37 @@ class TaskDefinition(BaseModel):
         return value.strip()
 
     @model_validator(mode="after")
-    def _unknown_tasks_are_not_modelable(self) -> "TaskDefinition":
+    def _decision_controls_modeling(self) -> "TaskDefinition":
         if self.task_type == "unknown":
+            self.decision = "rejected"
+
+        if self.decision == "accepted":
+            self.should_model = True
+            if self.task_type == "unknown":
+                raise ValueError("accepted tasks cannot have task_type='unknown'.")
+            if self.missing_information:
+                raise ValueError("accepted tasks cannot include missing_information.")
+            return self
+
+        self.should_model = False
+
+        if self.decision == "need_info":
+            if self.task_type == "unknown":
+                raise ValueError("need_info tasks must still have a supported task_type.")
+            if not self.missing_information:
+                raise ValueError("need_info tasks must include missing_information.")
+            if not self.user_facing_response.strip():
+                self.user_facing_response = "当前需求可以建模，但缺少关键信息，请补充后再继续。"
+
+        if self.decision == "rejected":
+            self.task_type = "unknown"
             self.should_model = False
             if not self.user_facing_response.strip():
                 self.user_facing_response = (
                     "当前需求不能明确归类为 classification、regression、"
                     "forecasting 或 clustering，因此暂不进入自动建模。"
                 )
+
         return self
 
     def to_json_dict(self) -> dict[str, Any]:

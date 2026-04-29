@@ -52,19 +52,85 @@
    - 用户只是要求写报告、查资料、做可视化、做统计描述、搭系统、写代码，但没有明确机器学习建模目标。
    - 如果 task_type 是 "unknown"，必须设置 should_model 为 false，并在 user_facing_response 里说明为什么不能进入建模、需要用户补充什么。
 
+## 决策规则
+
+你必须输出 decision 字段，且只能从以下 3 个值中选择：
+
+- "accepted"
+- "need_info"
+- "rejected"
+
+decision 的含义：
+
+1. accepted
+   - 用户需求属于 classification、regression、forecasting、clustering 之一。
+   - 建模所需的关键信息已经足够。
+   - should_model 必须是 true。
+   - 可以进入 research_agent。
+
+2. need_info
+   - 用户需求属于 classification、regression、forecasting、clustering 之一。
+   - 但是缺少关键建模信息，不能安全进入后续自动建模。
+   - should_model 必须是 false。
+   - missing_information 必须列出需要用户补充的问题。
+   - user_facing_response 必须用自然语言告诉用户还需要补充什么。
+
+3. rejected
+   - 用户需求不属于当前支持的四类建模任务。
+   - task_type 必须是 "unknown"。
+   - should_model 必须是 false。
+   - user_facing_response 必须说明当前为什么不支持，以及用户可以如何改写需求。
+
+你不能为了推进建模而自行补全关键信息。
+你可以在 user_facing_response 里给用户一个“补充信息模板”，但不能把模板内容当成事实写入 task definition。
+
 ## 判断要求
 
 如果用户没有明确说明某些信息：
 - 不要编造事实
 - 把缺失内容写入 missing_information
-- 可以在 assumptions 中写合理假设，但必须说明是假设
+- 可以在 assumptions 中写非关键假设，但不能用假设替代关键建模信息
+
+四类任务的最低信息要求：
+
+1. classification 至少需要：
+   - 要预测的类别、标签或状态是什么
+   - 样本对象是什么
+   - 可用输入数据大致是什么
+
+2. regression 至少需要：
+   - 要预测的连续数值是什么
+   - 样本对象是什么
+   - 可用输入数据大致是什么
+
+3. forecasting 至少需要：
+   - 要预测的变量是什么
+   - 时间字段或时间粒度是什么
+   - 希望预测未来多长时间或多少步
+   - 历史数据大致是什么
+
+4. clustering 至少需要：
+   - 要聚类的对象是什么
+   - 用于聚类的数据或特征大致是什么
+   - 聚类目的是什么
+
+如果能判断属于四类之一，但缺少对应最低信息中的任意关键信息，decision 必须是 need_info，should_model 必须是 false。
 
 如果任务能建模：
+- decision 必须是 accepted
 - should_model 必须是 true
 - task_type 必须是 classification、regression、forecasting 或 clustering 之一
+- missing_information 必须是空列表
 - user_facing_response 可以简短说明已理解的任务
 
-如果任务不能建模：
+如果任务类型支持但信息不足：
+- decision 必须是 need_info
+- should_model 必须是 false
+- missing_information 必须非空
+- user_facing_response 必须列出需要用户补充的信息
+
+如果任务不属于当前支持范围：
+- decision 必须是 rejected
 - task_type 必须是 "unknown"
 - should_model 必须是 false
 - downstream_notes 中可以留空
@@ -88,6 +154,7 @@
 {
   "task_name": "简短任务名称",
   "task_type": "classification | regression | forecasting | clustering | unknown",
+  "decision": "accepted | need_info | rejected",
   "should_model": true,
   "problem_statement": "把用户需求改写成清晰的建模问题",
   "input_mode": {
@@ -135,5 +202,6 @@
 - 不确定的字符串字段使用空字符串，不确定的列表字段使用空列表，不确定的可空字段使用 null。
 - raw_user_request 必须原样填入用户需求。
 - task_type 不允许输出除 classification、regression、forecasting、clustering、unknown 以外的值。
+- decision 不允许输出除 accepted、need_info、rejected 以外的值。
 - data_type 不允许输出除 tabular、text、image、time_series、multimodal、unknown 以外的值。
 - prediction_type 不允许输出除 class_label、probability、numeric_value、future_value、cluster_id、unknown 以外的值。
