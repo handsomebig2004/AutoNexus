@@ -43,6 +43,11 @@ from .numbered_paths import (
     create_task_directory,
     find_max_numbered_path,
 )
+from .requirement_validation import (
+    RequirementGateValidation,
+    normalize_requirement_gate,
+    validate_requirement_for_modeling,
+)
 from .run_logger import RunLogger
 from .task_logger import TaskLogger
 from .text import (
@@ -71,15 +76,18 @@ __all__ = [
     "next_jsonl_id",
     "next_llm_call_id",
     "next_numbered_id",
+    "normalize_requirement_gate",
     "parse_json_from_text",
     "read_json",
     "read_markdown",
     "read_text",
     "read_yaml",
     "resolve_env_vars",
+    "RequirementGateValidation",
     "RunLogger",
     "strip_code_fence",
     "TaskLogger",
+    "validate_requirement_for_modeling",
     "write_json",
     "write_markdown",
     "write_text",

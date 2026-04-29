@@ -47,6 +47,10 @@ class DataValidationError(AutoNexusError):
     """Input data failed validation."""
 
 
+class RequirementValidationError(AutoNexusError):
+    """Requirement agent output failed business-rule validation."""
+
+
 class GeneratedCodeError(AutoNexusError):
     """Base error for generated code problems."""
 

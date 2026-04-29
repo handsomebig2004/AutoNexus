@@ -30,6 +30,7 @@ from src.utils.errors import LLMOutputParseError
 from src.utils.ids import next_llm_call_id
 from src.utils.io import read_text, write_json
 from src.utils.log_events import EventTimer, build_error_data
+from src.utils.requirement_validation import normalize_requirement_gate
 from src.utils.task_logger import TaskLogger
 from src.utils.text import parse_json_from_text
 
@@ -86,6 +87,7 @@ class RequirementAgent:
             if isinstance(parsed, dict):
                 parsed["raw_user_request"] = user_request.request_text
             task_definition = TaskDefinition.model_validate(parsed)
+            task_definition, gate_validation = normalize_requirement_gate(task_definition)
         except (ValueError, ValidationError, TypeError) as exc:
             if "response" not in locals():
                 self._log_llm_call(
@@ -132,6 +134,9 @@ class RequirementAgent:
                 "task_type": task_definition.task_type,
                 "should_model": task_definition.should_model,
                 "missing_information_count": len(task_definition.missing_information),
+                "gate_can_model": gate_validation.can_model,
+                "gate_errors": gate_validation.errors,
+                "gate_warnings": gate_validation.warnings,
                 "output_path": str(output_path) if output_path else None,
                 "duration_seconds": timer.elapsed_seconds(),
             },
