@@ -54,10 +54,11 @@
 
 ## 决策规则
 
-你必须输出 decision 字段，且只能从以下 3 个值中选择：
+你必须输出 decision 字段，且只能从以下 4 个值中选择：
 
 - "accepted"
 - "need_info"
+- "need_confirmation"
 - "rejected"
 
 decision 的含义：
@@ -72,10 +73,18 @@ decision 的含义：
    - 用户需求属于 classification、regression、forecasting、clustering 之一。
    - 但是缺少关键建模信息，不能安全进入后续自动建模。
    - should_model 必须是 false。
-   - missing_information 必须列出需要用户补充的问题。
+   - missing_information.critical 必须列出需要用户补充的问题。
    - user_facing_response 必须用自然语言告诉用户还需要补充什么。
 
-3. rejected
+3. need_confirmation
+   - 用户需求属于 classification、regression、forecasting、clustering 之一。
+   - 关键建模信息已经足够，但仍缺少一些可选信息。
+   - should_model 必须是 false。
+   - missing_information.critical 必须为空。
+   - missing_information.optional 必须非空。
+   - user_facing_response 必须告诉用户：可以补充这些可选信息，或者回复 yes 直接继续建模。
+
+4. rejected
    - 用户需求不属于当前支持的四类建模任务。
    - task_type 必须是 "unknown"。
    - should_model 必须是 false。
@@ -84,11 +93,18 @@ decision 的含义：
 你不能为了推进建模而自行补全关键信息。
 你可以在 user_facing_response 里给用户一个“补充信息模板”，但不能把模板内容当成事实写入 task definition。
 
+missing_information 必须拆成：
+- critical：不补就不能安全建模的信息。
+- optional：补了会更好，但不补也可以在用户确认后继续的信息。
+
+不要把 critical 信息放进 optional 里绕过建模门槛。
+
 ## 判断要求
 
 如果用户没有明确说明某些信息：
 - 不要编造事实
-- 把缺失内容写入 missing_information
+- 把关键缺失内容写入 missing_information.critical
+- 把非阻塞但有帮助的信息写入 missing_information.optional
 - 可以在 assumptions 中写非关键假设，但不能用假设替代关键建模信息
 
 四类任务的最低信息要求：
@@ -120,14 +136,22 @@ decision 的含义：
 - decision 必须是 accepted
 - should_model 必须是 true
 - task_type 必须是 classification、regression、forecasting 或 clustering 之一
-- missing_information 必须是空列表
+- missing_information.critical 必须是空列表
+- missing_information.optional 必须是空列表
 - user_facing_response 可以简短说明已理解的任务
 
 如果任务类型支持但信息不足：
 - decision 必须是 need_info
 - should_model 必须是 false
-- missing_information 必须非空
+- missing_information.critical 必须非空
 - user_facing_response 必须列出需要用户补充的信息
+
+如果任务类型支持、关键信息足够、但可选信息缺失：
+- decision 必须是 need_confirmation
+- should_model 必须是 false
+- missing_information.critical 必须是空列表
+- missing_information.optional 必须非空
+- user_facing_response 必须告诉用户可以回复 yes 直接继续建模
 
 如果任务不属于当前支持范围：
 - decision 必须是 rejected
@@ -154,7 +178,7 @@ decision 的含义：
 {
   "task_name": "简短任务名称",
   "task_type": "classification | regression | forecasting | clustering | unknown",
-  "decision": "accepted | need_info | rejected",
+  "decision": "accepted | need_info | need_confirmation | rejected",
   "should_model": true,
   "problem_statement": "把用户需求改写成清晰的建模问题",
   "input_mode": {
@@ -185,7 +209,10 @@ decision 的含义：
     "metric_reasoning": "为什么推荐这些指标"
   },
   "assumptions": [],
-  "missing_information": [],
+  "missing_information": {
+    "critical": [],
+    "optional": []
+  },
   "user_facing_response": "给用户看的简短反馈",
   "downstream_notes": {
     "for_research_agent": [],
@@ -202,6 +229,6 @@ decision 的含义：
 - 不确定的字符串字段使用空字符串，不确定的列表字段使用空列表，不确定的可空字段使用 null。
 - raw_user_request 必须原样填入用户需求。
 - task_type 不允许输出除 classification、regression、forecasting、clustering、unknown 以外的值。
-- decision 不允许输出除 accepted、need_info、rejected 以外的值。
+- decision 不允许输出除 accepted、need_info、need_confirmation、rejected 以外的值。
 - data_type 不允许输出除 tabular、text、image、time_series、multimodal、unknown 以外的值。
 - prediction_type 不允许输出除 class_label、probability、numeric_value、future_value、cluster_id、unknown 以外的值。

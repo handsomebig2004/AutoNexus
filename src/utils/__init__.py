@@ -45,6 +45,7 @@ from .numbered_paths import (
 )
 from .requirement_validation import (
     RequirementGateValidation,
+    confirm_optional_information,
     normalize_requirement_gate,
     validate_requirement_for_modeling,
 )
@@ -71,6 +72,7 @@ __all__ = [
     "build_error_data",
     "build_error_event",
     "build_log_event",
+    "confirm_optional_information",
     "get_config_section",
     "load_config",
     "next_jsonl_id",

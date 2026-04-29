@@ -7,7 +7,8 @@ What this file does:
 How it works:
     Pydantic validates that task_type is one of the supported task categories
     and that decision controls whether the pipeline can continue. Only accepted
-    tasks are modelable. need_info and rejected tasks are returned to the user.
+    tasks are modelable. need_info, need_confirmation, and rejected tasks are
+    returned to the user.
 
 How to call it:
     from src.schemas.requirement import TaskDefinition
@@ -33,6 +34,7 @@ TaskType = Literal[
 RequirementDecision = Literal[
     "accepted",
     "need_info",
+    "need_confirmation",
     "rejected",
 ]
 
@@ -113,6 +115,15 @@ class DownstreamNotes(BaseModel):
     for_evaluation_agent: list[str] = Field(default_factory=list)
 
 
+class MissingInformation(BaseModel):
+    """Information missing from the user request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    critical: list[str] = Field(default_factory=list)
+    optional: list[str] = Field(default_factory=list)
+
+
 class TaskDefinition(BaseModel):
     """Full requirement_agent output."""
 
@@ -128,10 +139,21 @@ class TaskDefinition(BaseModel):
     constraints: Constraints = Field(default_factory=Constraints)
     evaluation: EvaluationPlan = Field(default_factory=EvaluationPlan)
     assumptions: list[str] = Field(default_factory=list)
-    missing_information: list[str] = Field(default_factory=list)
+    missing_information: MissingInformation = Field(default_factory=MissingInformation)
     user_facing_response: str = ""
     downstream_notes: DownstreamNotes = Field(default_factory=DownstreamNotes)
     raw_user_request: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy_missing_information(cls, data: Any) -> Any:
+        if isinstance(data, dict) and isinstance(data.get("missing_information"), list):
+            data = data.copy()
+            data["missing_information"] = {
+                "critical": data["missing_information"],
+                "optional": [],
+            }
+        return data
 
     @field_validator("task_name", "problem_statement")
     @classmethod
@@ -149,8 +171,17 @@ class TaskDefinition(BaseModel):
             self.should_model = True
             if self.task_type == "unknown":
                 raise ValueError("accepted tasks cannot have task_type='unknown'.")
-            if self.missing_information:
-                raise ValueError("accepted tasks cannot include missing_information.")
+            if self.missing_information.critical:
+                raise ValueError(
+                    "accepted tasks cannot include critical missing_information."
+                )
+            if self.missing_information.optional:
+                self.decision = "need_confirmation"
+                self.should_model = False
+                self.user_facing_response = (
+                    "当前需求的关键信息已经足够，可以进入建模；但仍缺少一些可选信息。"
+                    "请补充这些信息，或回复 yes 直接继续建模。"
+                )
             return self
 
         self.should_model = False
@@ -158,10 +189,28 @@ class TaskDefinition(BaseModel):
         if self.decision == "need_info":
             if self.task_type == "unknown":
                 raise ValueError("need_info tasks must still have a supported task_type.")
-            if not self.missing_information:
-                raise ValueError("need_info tasks must include missing_information.")
+            if not self.missing_information.critical:
+                raise ValueError(
+                    "need_info tasks must include critical missing_information."
+                )
             if not self.user_facing_response.strip():
                 self.user_facing_response = "当前需求可以建模，但缺少关键信息，请补充后再继续。"
+
+        if self.decision == "need_confirmation":
+            if self.task_type == "unknown":
+                raise ValueError(
+                    "need_confirmation tasks must have a supported task_type."
+                )
+            if self.missing_information.critical:
+                raise ValueError(
+                    "need_confirmation tasks cannot include critical missing_information."
+                )
+            if not self.missing_information.optional:
+                raise ValueError(
+                    "need_confirmation tasks must include optional missing_information."
+                )
+            if not self.user_facing_response.strip():
+                self.user_facing_response = "当前需求可以建模，但缺少一些可选信息。是否继续建模？"
 
         if self.decision == "rejected":
             self.task_type = "unknown"

@@ -133,7 +133,12 @@ class RequirementAgent:
                 "decision": task_definition.decision,
                 "task_type": task_definition.task_type,
                 "should_model": task_definition.should_model,
-                "missing_information_count": len(task_definition.missing_information),
+                "critical_missing_information_count": len(
+                    task_definition.missing_information.critical
+                ),
+                "optional_missing_information_count": len(
+                    task_definition.missing_information.optional
+                ),
                 "gate_can_model": gate_validation.can_model,
                 "gate_errors": gate_validation.errors,
                 "gate_warnings": gate_validation.warnings,

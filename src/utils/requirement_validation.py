@@ -6,8 +6,9 @@ What this file does:
 
 How it works:
     Pydantic validates the shape of TaskDefinition. This file validates the
-    business gate: supported task type, accepted decision, no missing blocking
-    information, and enough input/output/evaluation detail to continue.
+    business gate: supported task type, accepted decision, no critical or
+    optional missing information, and enough input/output/evaluation detail to
+    continue.
 
 How to call it:
     from src.utils.requirement_validation import normalize_requirement_gate
@@ -15,6 +16,9 @@ How to call it:
     task_definition, validation = normalize_requirement_gate(task_definition)
     if not validation.can_model:
         return task_definition.user_facing_response
+
+    # If decision is need_confirmation and the user replies yes:
+    task_definition = confirm_optional_information(task_definition)
 """
 
 from __future__ import annotations
@@ -51,13 +55,13 @@ def validate_requirement_for_modeling(
     errors: list[str] = []
     warnings: list[str] = []
 
-    _validate_gate_decision(task_definition, errors)
+    _validate_gate_decision(task_definition, errors, warnings)
     _validate_input_mode(task_definition, errors, warnings)
     _validate_output_mode(task_definition, errors)
     _validate_evaluation(task_definition, errors, warnings)
 
     result = RequirementGateValidation(
-        can_model=not errors,
+        can_model=not errors and not warnings,
         errors=errors,
         warnings=warnings,
     )
@@ -70,27 +74,68 @@ def normalize_requirement_gate(
     task_definition: TaskDefinition,
 ) -> tuple[TaskDefinition, RequirementGateValidation]:
     """
-    Validate a TaskDefinition and downgrade unsafe accepted tasks to need_info.
+    Validate a TaskDefinition and downgrade unsafe accepted tasks.
 
     If the LLM says accepted but the deterministic gate finds missing critical
     information, this function turns the output into need_info so downstream
-    agents cannot accidentally start modeling.
+    agents cannot accidentally start modeling. If only optional information is
+    missing, it turns the output into need_confirmation.
     """
     validation = validate_requirement_for_modeling(task_definition)
     if validation.can_model or task_definition.decision != "accepted":
         return task_definition, validation
 
     data = task_definition.to_json_dict()
-    data["decision"] = "need_info"
     data["should_model"] = False
-    data["missing_information"] = _merge_unique(
-        task_definition.missing_information,
-        validation.errors,
-    )
-    data["user_facing_response"] = _build_need_info_response(validation.errors)
+    if validation.errors:
+        data["decision"] = "need_info"
+        data["missing_information"]["critical"] = _merge_unique(
+            task_definition.missing_information.critical,
+            validation.errors,
+        )
+        data["user_facing_response"] = _build_need_info_response(validation.errors)
+    else:
+        data["decision"] = "need_confirmation"
+        data["missing_information"]["optional"] = _merge_unique(
+            task_definition.missing_information.optional,
+            validation.warnings,
+        )
+        data["user_facing_response"] = _build_need_confirmation_response(
+            data["missing_information"]["optional"]
+        )
 
     normalized = TaskDefinition.model_validate(data)
     return normalized, validation
+
+
+def confirm_optional_information(task_definition: TaskDefinition) -> TaskDefinition:
+    """
+    Confirm that the user wants to continue despite optional missing information.
+
+    This is used after the user replies yes to a need_confirmation response. It
+    does not call requirement_agent again.
+    """
+    if task_definition.decision != "need_confirmation":
+        raise RequirementValidationError(
+            "Only need_confirmation tasks can be confirmed this way."
+        )
+    if task_definition.missing_information.critical:
+        raise RequirementValidationError(
+            "Cannot confirm a task with critical missing information."
+        )
+
+    optional_items = task_definition.missing_information.optional
+    data = task_definition.to_json_dict()
+    data["decision"] = "accepted"
+    data["should_model"] = True
+    data["missing_information"] = {"critical": [], "optional": []}
+    if optional_items:
+        data["assumptions"] = [
+            *task_definition.assumptions,
+            "用户确认在缺少以下可选信息时继续建模: " + "；".join(optional_items),
+        ]
+    data["user_facing_response"] = "已确认在缺少可选信息的情况下继续进入后续建模。"
+    return TaskDefinition.model_validate(data)
 
 
 def _merge_unique(first: list[str], second: list[str]) -> list[str]:
@@ -113,9 +158,21 @@ def _build_need_info_response(errors: list[str]) -> str:
     )
 
 
+def _build_need_confirmation_response(optional_items: list[str]) -> str:
+    items = "\n".join(
+        f"{index}. {item}" for index, item in enumerate(optional_items, 1)
+    )
+    return (
+        "当前需求的关键信息已经足够，可以进入建模；但仍缺少一些可选信息，"
+        "补充后可能提升建模质量。请补充以下信息，或回复 yes 直接继续：\n"
+        f"{items}"
+    )
+
+
 def _validate_gate_decision(
     task_definition: TaskDefinition,
     errors: list[str],
+    warnings: list[str],
 ) -> None:
     if task_definition.task_type not in SUPPORTED_MODELING_TASK_TYPES:
         errors.append(
@@ -129,8 +186,15 @@ def _validate_gate_decision(
     if not task_definition.should_model:
         errors.append("should_model must be true to enter modeling.")
 
-    if task_definition.missing_information:
-        errors.append("missing_information must be empty to enter modeling.")
+    if task_definition.missing_information.critical:
+        errors.append(
+            "missing_information.critical must be empty to enter modeling."
+        )
+
+    if task_definition.missing_information.optional:
+        warnings.append(
+            "missing_information.optional must be confirmed before modeling."
+        )
 
 
 def _validate_input_mode(

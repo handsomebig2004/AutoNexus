@@ -306,6 +306,384 @@ Agent 和 pipeline 只认识 UserRequest。
 
 这些逻辑应该放在 `agents/` 或后续的 `pipeline/` 中，避免输入接口和业务流程耦合。
 
+## requirement_agent 说明
+
+`requirement_agent` 是 AutoNexus pipeline 的第一个 Agent，也是一个“建模闸门”。它的职责不是直接建模，而是判断用户需求是否可以进入后续自动建模流程。
+
+实现文件：
+
+```text
+src/agents/requirement_agent.py
+src/prompts/requirement_agent.md
+src/schemas/requirement.py
+src/utils/requirement_validation.py
+```
+
+### 输入
+
+`requirement_agent` 接收标准化后的 `UserRequest`，而不是裸字符串。
+
+```python
+from src.schemas import UserRequest
+
+user_request = UserRequest(
+    request_text="我有客户历史消费数据和是否流失标签，想预测客户是否会流失",
+    source="cli",
+)
+```
+
+字段来源可以是：
+
+- `--text`
+- `--file`
+- PowerShell 管道 / stdin
+- 未来 Web API
+
+只要转换成 `UserRequest`，后续 `requirement_agent` 的使用方式都一样。
+
+### 输出
+
+`requirement_agent` 输出 `TaskDefinition`，定义在：
+
+```text
+src/schemas/requirement.py
+```
+
+核心结构如下：
+
+```json
+{
+  "task_name": "客户流失预测",
+  "task_type": "classification",
+  "decision": "accepted",
+  "should_model": true,
+  "problem_statement": "基于客户历史消费数据预测客户是否会流失。",
+  "input_mode": {
+    "data_type": "tabular",
+    "required_inputs": ["客户历史消费数据", "客户是否流失标签"],
+    "optional_inputs": [],
+    "target_column": "churn",
+    "id_columns": ["customer_id"],
+    "time_column": null,
+    "data_granularity": null,
+    "known_data_sources": []
+  },
+  "output_mode": {
+    "prediction_type": "class_label",
+    "target_description": "客户是否流失",
+    "output_format": "每个客户输出一个流失/不流失类别"
+  },
+  "constraints": {
+    "must_have": [],
+    "must_not": [],
+    "resource_limits": [],
+    "privacy_or_safety": []
+  },
+  "evaluation": {
+    "primary_metric": "f1",
+    "secondary_metrics": ["accuracy"],
+    "validation_strategy": "train/validation/test split",
+    "metric_reasoning": "客户流失任务可能存在类别不均衡，f1 比 accuracy 更稳妥。"
+  },
+  "assumptions": [],
+  "missing_information": {
+    "critical": [],
+    "optional": []
+  },
+  "user_facing_response": "已识别为分类任务，可以进入后续建模。",
+  "downstream_notes": {
+    "for_research_agent": [],
+    "for_data_agent": [],
+    "for_train_agent": [],
+    "for_evaluation_agent": []
+  },
+  "raw_user_request": "我有客户历史消费数据和是否流失标签，想预测客户是否会流失"
+}
+```
+
+### 支持的任务类型
+
+当前只支持四类建模任务：
+
+| task_type | 含义 | 示例 |
+| --- | --- | --- |
+| `classification` | 预测离散类别、标签、状态、是否发生等。 | 预测客户是否流失、判断邮件是否垃圾邮件。 |
+| `regression` | 预测连续数值。 | 预测房价、预测评分、预测温度。 |
+| `forecasting` | 基于时间顺序预测未来值或趋势。 | 预测未来 7 天销量、预测下月用电量。 |
+| `clustering` | 无监督发现群组或样本结构。 | 客户分群、用户画像、行为模式发现。 |
+
+其他需求统一归为：
+
+```text
+task_type = unknown
+decision = rejected
+should_model = false
+```
+
+例如：
+
+- 只要求写报告
+- 只要求查资料
+- 只要求做可视化
+- 只要求搭系统
+- 没有明确机器学习建模目标
+
+这些不会进入后续建模。
+
+### 决策状态
+
+`requirement_agent` 不只是判断 `task_type`，还会输出 `decision`。
+
+| decision | 是否进入建模 | 含义 |
+| --- | --- | --- |
+| `accepted` | 是 | 任务类型支持，且关键信息和可选确认都已满足。 |
+| `need_info` | 否 | 任务类型支持，但缺少关键建模信息，必须让用户补充。 |
+| `need_confirmation` | 暂停 | 关键信息足够，但缺少可选信息；用户可以补充，也可以回复 `yes` 直接继续。 |
+| `rejected` | 否 | 不属于当前支持的四类建模任务。 |
+
+后续 pipeline 推荐这样判断：
+
+```python
+task_definition = requirement_agent.run(user_request)
+
+if task_definition.decision == "accepted":
+    continue_pipeline(task_definition)
+
+elif task_definition.decision == "need_confirmation":
+    return task_definition.user_facing_response
+
+else:
+    return task_definition.user_facing_response
+```
+
+### critical / optional 缺失信息
+
+`missing_information` 被拆成两类：
+
+```json
+{
+  "critical": [],
+  "optional": []
+}
+```
+
+含义：
+
+| 字段 | 是否阻塞建模 | 含义 |
+| --- | --- | --- |
+| `critical` | 是 | 不补就不能安全建模的信息。 |
+| `optional` | 需要用户确认 | 补了会更好，但用户确认后可以继续建模。 |
+
+例如 forecasting 任务：
+
+```json
+{
+  "decision": "need_info",
+  "should_model": false,
+  "missing_information": {
+    "critical": [
+      "请说明要预测的目标变量。",
+      "请说明时间字段或时间粒度。",
+      "请说明希望预测未来多久。"
+    ],
+    "optional": [
+      "如果有节假日、促销、价格等外生变量，可以一起提供。"
+    ]
+  }
+}
+```
+
+这种情况必须补充 `critical`，不能进入建模。
+
+如果只有 optional 缺失：
+
+```json
+{
+  "decision": "need_confirmation",
+  "should_model": false,
+  "missing_information": {
+    "critical": [],
+    "optional": [
+      "建议补充类别分布，用于判断是否需要处理类别不均衡。"
+    ]
+  }
+}
+```
+
+这种情况会先返回用户。用户可以补充信息，也可以回复：
+
+```text
+yes
+```
+
+然后系统可以直接进入后续建模，不需要再次调用 `requirement_agent`。
+
+### 用户 yes 后如何继续
+
+如果 `decision == "need_confirmation"`，并且用户回复 `yes`，使用：
+
+```python
+from src.utils import confirm_optional_information
+
+task_definition = confirm_optional_information(task_definition)
+```
+
+这个函数会：
+
+- 检查当前任务确实是 `need_confirmation`
+- 确认 `critical` 为空
+- 将 `decision` 改成 `accepted`
+- 将 `should_model` 改成 `true`
+- 清空 `missing_information`
+- 把“用户确认缺少可选信息仍继续建模”写入 `assumptions`
+
+它不会重新调用 LLM，也不会重新跑 `requirement_agent`。
+
+### 内部处理逻辑
+
+`RequirementAgent.run()` 的流程：
+
+```text
+UserRequest
+  ↓
+读取 src/prompts/requirement_agent.md
+  ↓
+拼接用户需求
+  ↓
+调用 LLMClient.generate()
+  ↓
+记录 llm_calls.jsonl
+  ↓
+从 LLM 输出中提取 JSON
+  ↓
+使用 TaskDefinition 做 schema 校验
+  ↓
+使用 normalize_requirement_gate() 做确定性业务校验
+  ↓
+必要时把 unsafe accepted 降级为 need_info / need_confirmation
+  ↓
+写 task_definition.json
+  ↓
+写 task.jsonl 摘要
+  ↓
+返回 TaskDefinition
+```
+
+其中：
+
+- LLM 负责理解自然语言。
+- `TaskDefinition` 负责结构校验。
+- `normalize_requirement_gate()` 负责最终闸门校验。
+- 只有 `accepted` 才允许进入后续 Agent。
+
+### 确定性验证逻辑
+
+确定性验证在：
+
+```text
+src/utils/requirement_validation.py
+```
+
+主要函数：
+
+```python
+validate_requirement_for_modeling(task_definition)
+normalize_requirement_gate(task_definition)
+confirm_optional_information(task_definition)
+```
+
+验证内容包括：
+
+- `task_type` 必须是四类支持任务之一。
+- `decision` 必须是 `accepted` 才能直接建模。
+- `should_model` 必须为 `true` 才能直接建模。
+- `missing_information.critical` 必须为空。
+- `missing_information.optional` 必须为空，或者经过用户 `yes` 确认。
+- `input_mode.data_type` 不能是 `unknown`。
+- `input_mode.required_inputs` 不能为空。
+- `classification` / `regression` 必须有 `target_column`。
+- `forecasting` 必须有 `target_column` 和 `time_column`。
+- `output_mode.prediction_type` 不能是 `unknown`。
+- `output_mode.target_description` 不能为空。
+- `output_mode.output_format` 不能为空。
+- `evaluation.primary_metric` 不能为空。
+
+如果 LLM 输出 `accepted`，但确定性验证发现关键信息不全，会自动变成：
+
+```text
+decision = need_info
+should_model = false
+```
+
+如果只有可选信息缺失，会自动变成：
+
+```text
+decision = need_confirmation
+should_model = false
+```
+
+### 如何使用 requirement_agent
+
+最小用法：
+
+```python
+from src.agents.requirement_agent import RequirementAgent
+from src.schemas import UserRequest
+
+user_request = UserRequest(
+    request_text="我有客户历史消费数据和是否流失标签，想预测客户是否会流失",
+    source="cli",
+)
+
+agent = RequirementAgent()
+task_definition = agent.run(user_request)
+print(task_definition.decision)
+```
+
+带 task 日志和输出文件：
+
+```python
+from src.agents.requirement_agent import RequirementAgent
+from src.schemas import UserRequest
+from src.utils import TaskLogger
+
+task_dir = "tasks/task_0"
+logger = TaskLogger(task_dir)
+
+agent = RequirementAgent(task_logger=logger)
+task_definition = agent.run(
+    UserRequest(
+        request_text="我有客户历史消费数据和是否流失标签，想预测客户是否会流失",
+        source="cli",
+    ),
+    output_path="tasks/task_0/metadata/task_definition.json",
+)
+```
+
+如果要从 CLI 输入接入：
+
+```python
+from src.interfaces.cli import read_user_request_from_cli
+from src.agents.requirement_agent import RequirementAgent
+
+user_request = read_user_request_from_cli()
+task_definition = RequirementAgent().run(user_request)
+```
+
+### requirement_agent 相关文件
+
+| 文件 | 作用 |
+| --- | --- |
+| `src/agents/requirement_agent.py` | Agent 主体逻辑：调用 LLM、解析输出、校验、写日志和输出。 |
+| `src/prompts/requirement_agent.md` | 固定提示词：说明支持任务、决策规则、输出 JSON 格式。 |
+| `src/schemas/requirement.py` | `TaskDefinition` schema：约束输出结构和基础规则。 |
+| `src/schemas/user_request.py` | `UserRequest` schema：统一 CLI、文件、stdin、Web 输入。 |
+| `src/utils/requirement_validation.py` | 确定性业务校验：判断是否能进入后续建模。 |
+| `src/utils/text.py` | 从 LLM 回复中提取 JSON。 |
+| `src/utils/ids.py` | 生成 `llm_0001` 这类 LLM 调用编号。 |
+| `src/tools/llm_client.py` | 访问外部 LLM。 |
+| `src/utils/task_logger.py` | 写入 `task.jsonl` 和 `llm_calls.jsonl`。 |
+
 ## 工具规划
 
 只考虑了 `data_agent`，其他的后面再说（划掉的是目前已实现的）
@@ -331,11 +709,14 @@ Agent 和 pipeline 只认识 UserRequest。
 | ~~路径工具~~ | `src/utils/numbered_paths.py` | 创建 `path/prefix_xxx` 目录：扫描已有编号，取最大编号并创建下一个目录；使用 `filelock` 防止并发重复，返回已创建好的 `Path`。 |
 | ~~配置读取~~ | `src/utils/config.py` | 读取 `settings.yaml`及其中的Agent 配置和默认参数。 |
 | ~~JSON/YAML IO~~ | `src/utils/io.py` | 统一读写 `json`、`yaml`、`txt`、`md`，避免各处重复实现。 |
-| 日志工具 | `src/utils/logging.py` | 统一记录 Agent 调用日志和脚本执行日志。 |
-| 文本格式工具 | `src/utils/text.py` | 清理 LLM 输出，例如从回复中提取 Python 代码块或 JSON。 |
+| ~~任务日志工具~~ | `src/utils/task_logger.py` | 写入 `task.jsonl` 和 `llm_calls.jsonl`。 |
+| ~~run 日志工具~~ | `src/utils/run_logger.py` | 写入某个 run 的 `run.jsonl`。 |
+| ~~文本格式工具~~ | `src/utils/text.py` | 清理 LLM 输出，例如从回复中提取 Python 代码块或 JSON。 |
+| ~~ID 生成工具~~ | `src/utils/ids.py` | 生成 `llm_0001` 等稳定编号，也可从 JSONL 中扫描下一个编号。 |
 | 哈希/版本工具 | `src/utils/hash.py` | 记录原始数据 hash 和脚本 hash，方便复现。 |
 | ~~错误类型定义~~ | `src/utils/errors.py` | 定义 `DataValidationError`、`GeneratedCodeError` 等异常类型。 |
 | ~~日志事件/内容生成~~ | `src/utils/log_events.py` | 生成日志事件里需要的结构化信息。 |
+| ~~需求闸门验证~~ | `src/utils/requirement_validation.py` | 验证 `TaskDefinition` 是否能进入建模，并处理 optional 信息确认。 |
 
 ## 错误处理规划
 
@@ -594,4 +975,3 @@ run.jsonl
 | `append_jsonl()` | `src/utils/io.py` | 向 JSONL 文件追加一条 JSON 记录。 |
 | `TaskLogger` | `src/utils/task_logger.py` | 写入 `task.jsonl` 和 `llm_calls.jsonl`。 |
 | `RunLogger` | `src/utils/run_logger.py` | 写入某个 run 的 `run.jsonl`。 |
-
