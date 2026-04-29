@@ -20,6 +20,7 @@ autoNexus 是一个面向自动建模流程的多 Agent 项目。当前目标是
 ├── config/                 # YAML 等配置文件
 ├── src/                    # 项目核心代码
 │   ├── agents/             # 各类 Agent 的源代码
+│   ├── interfaces/         # CLI、stdin、文件、未来 Web API 等外部输入接口
 │   ├── models/             # 总结后的模型信息，供 LLM Agent 参考
 │   ├── prompts/            # 固定提示词
 │   ├── schemas/            # Agent 输出的标准格式
@@ -64,12 +65,246 @@ tasks/
 | 目录 | 说明 |
 | --- | --- |
 | `src/agents/` | 各类 Agent 的源代码。每个 Agent 应输出固定结构，方便后续工具或其他 Agent 消费。 |
+| `src/interfaces/` | 外部输入接口。负责把命令行、文件、stdin 或未来 Web API 的输入统一转成内部 schema。 |
 | `src/prompts/` | 各类模型的固定提示词。后续可以考虑加入 `manager` 或 `memory`，在提示词进入 Agent 前做统一处理。 |
 | `src/models/` | 经过总结的模型信息，可输入给 LLM Agent，辅助它按指定模型写代码。 |
 | `src/skills/` | 输入给 LLM Agent 的技能文档，例如如何找论文、如何使用 `models/` 中的模型信息。 |
 | `src/schemas/` | Agent 输出的标准格式定义。 |
 | `src/tools/` | 与外部连接、代码执行、数据处理相关的工具函数或类，后续可加入安全检查。 |
 | `src/utils/` | Agent 和 tools 之间复用的小函数。后续如果做 Agent 记忆，也可以在这里扩展 `memory/` 等目录。 |
+
+## 输入接口说明
+
+AutoNexus 的输入层和 Agent 层是分离的。命令行、文件、PowerShell 管道、未来网页接口都不应该直接把字符串塞进某个 Agent，而是先统一转换成 `UserRequest`。
+
+统一输入对象定义在：
+
+```text
+src/schemas/user_request.py
+```
+
+结构如下：
+
+```json
+{
+  "request_text": "预测客户是否流失",
+  "source": "stdin",
+  "source_path": null,
+  "metadata": {
+    "interface": "cli"
+  }
+}
+```
+
+字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `request_text` | 用户原始需求文本，后续会传给 `requirement_agent`。 |
+| `source` | 输入来源，目前支持 `cli`、`file`、`stdin`、`web`。 |
+| `source_path` | 如果来源是文件，记录文件路径；否则为 `null`。 |
+| `metadata` | 额外信息，例如接口类型、文件编码、用户 ID、前端来源等。 |
+
+### 为什么要有输入接口层
+
+这样设计是为了降低耦合：
+
+```text
+CLI / 文件 / PowerShell 管道 / Web API
+        ↓
+UserRequest
+        ↓
+requirement_agent
+        ↓
+TaskDefinition
+```
+
+`requirement_agent` 只接收 `UserRequest`，不关心用户输入来自命令行、文件还是网页。以后从 CLI 换成 Web API 时，只需要新增 Web 接口，把 HTTP 请求转换成同一个 `UserRequest`，不用改 Agent 本身。
+
+### 当前支持的输入方式
+
+当前命令行接口在：
+
+```text
+src/interfaces/cli.py
+```
+
+支持三种输入方式。
+
+#### 1. 直接传入文本
+
+```powershell
+conda activate automl
+python -m src.interfaces.cli --text "预测客户是否流失"
+```
+
+输出：
+
+```json
+{
+  "request_text": "预测客户是否流失",
+  "source": "cli",
+  "source_path": null,
+  "metadata": {
+    "interface": "cli"
+  }
+}
+```
+
+适合快速测试或脚本调用。
+
+#### 2. 从文件读取
+
+```powershell
+conda activate automl
+python -m src.interfaces.cli --file .\request.txt
+```
+
+默认文件编码是 `utf-8-sig`，可以兼容带 BOM 的 UTF-8 文件。如果需要指定编码：
+
+```powershell
+python -m src.interfaces.cli --file .\request.txt --encoding utf-8
+```
+
+输出里的 `source` 会是 `file`，并记录 `source_path`：
+
+```json
+{
+  "request_text": "预测未来7天销量",
+  "source": "file",
+  "source_path": "request.txt",
+  "metadata": {
+    "interface": "cli",
+    "encoding": "utf-8-sig"
+  }
+}
+```
+
+适合较长需求、从文档中复制出的任务描述，或者后续批量任务。
+
+#### 3. 从 PowerShell 管道 / stdin 读取
+
+```powershell
+conda activate automl
+"给客户做无监督分群" | python -m src.interfaces.cli
+```
+
+也可以：
+
+```powershell
+Get-Content .\request.txt | python -m src.interfaces.cli
+```
+
+输出里的 `source` 会是 `stdin`：
+
+```json
+{
+  "request_text": "给客户做无监督分群",
+  "source": "stdin",
+  "source_path": null,
+  "metadata": {
+    "interface": "cli"
+  }
+}
+```
+
+如果 PowerShell 管道传中文时出现乱码，可以先设置：
+
+```powershell
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+```
+
+### 写出标准输入 JSON
+
+CLI 可以把标准化后的 `UserRequest` 写入文件：
+
+```powershell
+python -m src.interfaces.cli --text "预测房价" --output tasks\user_request.json
+```
+
+这会同时：
+
+- 在终端打印 `UserRequest`
+- 将同样内容写入 `tasks/user_request.json`
+
+后续 pipeline 可以直接读取这个 JSON，作为 task 的原始输入记录。
+
+### 如何传给 requirement_agent
+
+后续 `requirement_agent` 推荐只接收 `UserRequest`，不要接收裸字符串：
+
+```python
+from src.interfaces.cli import read_user_request_from_cli
+from src.agents.requirement_agent import RequirementAgent
+
+user_request = read_user_request_from_cli()
+
+agent = RequirementAgent()
+task_definition = agent.run(user_request)
+```
+
+`requirement_agent` 内部应该使用：
+
+```python
+user_request.request_text
+```
+
+作为 LLM prompt 的用户需求输入，同时把这些信息写入日志：
+
+```python
+user_request.source
+user_request.source_path
+user_request.metadata
+```
+
+这样可以追踪任务来自哪里，也方便复现实验。
+
+### 未来 Web API 如何接入
+
+以后如果加网页或 HTTP API，不需要改 `requirement_agent`，只需要在 Web 层构造同一个 schema：
+
+```python
+from src.schemas import UserRequest
+
+user_request = UserRequest(
+    request_text=payload["text"],
+    source="web",
+    metadata={
+        "user_id": payload.get("user_id"),
+        "session_id": payload.get("session_id"),
+    },
+)
+
+task_definition = requirement_agent.run(user_request)
+```
+
+也就是说：
+
+```text
+CLI 和 Web 的区别只存在于 interfaces 层。
+Agent 和 pipeline 只认识 UserRequest。
+```
+
+### 输入接口的边界
+
+`src/interfaces/cli.py` 只负责：
+
+- 读取 `--text`
+- 读取 `--file`
+- 读取 stdin / PowerShell 管道
+- 转成 `UserRequest`
+- 可选写出 JSON
+
+它不负责：
+
+- 调用 LLM
+- 判断任务类型
+- 创建模型方案
+- 创建 run
+- 执行 pipeline
+
+这些逻辑应该放在 `agents/` 或后续的 `pipeline/` 中，避免输入接口和业务流程耦合。
 
 ## 工具规划
 
@@ -359,5 +594,4 @@ run.jsonl
 | `append_jsonl()` | `src/utils/io.py` | 向 JSONL 文件追加一条 JSON 记录。 |
 | `TaskLogger` | `src/utils/task_logger.py` | 写入 `task.jsonl` 和 `llm_calls.jsonl`。 |
 | `RunLogger` | `src/utils/run_logger.py` | 写入某个 run 的 `run.jsonl`。 |
-
 
