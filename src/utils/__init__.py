@@ -24,6 +24,12 @@ from .io import (
     write_text,
     write_yaml,
 )
+from .ids import (
+    format_numbered_id,
+    next_jsonl_id,
+    next_llm_call_id,
+    next_numbered_id,
+)
 from .log_events import (
     EventTimer,
     build_error_data,
@@ -39,6 +45,12 @@ from .numbered_paths import (
 )
 from .run_logger import RunLogger
 from .task_logger import TaskLogger
+from .text import (
+    extract_fenced_blocks,
+    extract_json_text,
+    parse_json_from_text,
+    strip_code_fence,
+)
 
 __all__ = [
     "append_jsonl",
@@ -47,18 +59,26 @@ __all__ = [
     "create_task_directory",
     "current_timestamp",
     "EventTimer",
+    "extract_fenced_blocks",
+    "extract_json_text",
     "find_max_numbered_path",
+    "format_numbered_id",
     "build_error_data",
     "build_error_event",
     "build_log_event",
     "get_config_section",
     "load_config",
+    "next_jsonl_id",
+    "next_llm_call_id",
+    "next_numbered_id",
+    "parse_json_from_text",
     "read_json",
     "read_markdown",
     "read_text",
     "read_yaml",
     "resolve_env_vars",
     "RunLogger",
+    "strip_code_fence",
     "TaskLogger",
     "write_json",
     "write_markdown",
