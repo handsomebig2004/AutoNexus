@@ -15,7 +15,9 @@ How to call it:
 
 __all__ = [
     "DataProfile",
+    "InferredSchema",
     "LoadedTable",
+    "infer_schema",
     "list_supported_table_files",
     "load_table",
     "load_table_from_config",
@@ -33,10 +35,13 @@ def __getattr__(name: str):
             load_table,
             load_table_from_config,
         )
+        from .schema_infer import InferredSchema, infer_schema
 
         exports = {
             "DataProfile": DataProfile,
+            "InferredSchema": InferredSchema,
             "LoadedTable": LoadedTable,
+            "infer_schema": infer_schema,
             "list_supported_table_files": list_supported_table_files,
             "load_table": load_table,
             "load_table_from_config": load_table_from_config,

@@ -1178,6 +1178,228 @@ conda activate automl
 python -m pytest tests\tools\test_data_profiler.py
 ```
 
+## schema_infer 说明
+
+`schema_infer` 是字段语义和建模角色推断工具，文件在：
+
+```text
+src/tools/schema_infer.py
+```
+
+它接收 `data_profiler` 的输出，推断每一列大概应该怎么用，例如：
+
+- 哪些列像 ID，应该默认丢弃。
+- 哪些列是数值特征。
+- 哪些列是类别特征。
+- 哪些列是自由文本。
+- 哪些列是时间字段。
+- 哪一列是 target。
+- 哪些列只是 target 候选，需要用户或后续 Agent 确认。
+
+它同样不调用 LLM，也不修改数据，只做确定性启发式判断。
+
+### 输入
+
+最主要输入是 `profile_table()` 的输出：
+
+```python
+from src.tools.data_profiler import profile_table
+from src.tools.schema_infer import infer_schema
+
+profile = profile_table("tasks/task_0/data/raw/train.csv")
+schema = infer_schema(profile)
+```
+
+如果已经有 `TaskDefinition`，推荐传入：
+
+```python
+schema = infer_schema(profile, task_definition=task_definition)
+```
+
+这样 `TaskDefinition.input_mode.target_column` 和 `TaskDefinition.input_mode.time_column` 会优先于启发式规则。
+
+也可以手动指定：
+
+```python
+schema = infer_schema(
+    profile,
+    target_column="churn",
+    time_column="date",
+)
+```
+
+### 参数
+
+| 参数 | 作用 |
+| --- | --- |
+| `profile` | `data_profiler.profile_table()` 生成的数据画像。 |
+| `task_definition` | 可选的 `TaskDefinition` 或 dict，用于读取 `task_type`、`target_column`、`time_column`。 |
+| `target_column` | 可选的显式目标列，会覆盖 `task_definition` 中的目标列。 |
+| `time_column` | 可选的显式时间列，会覆盖 `task_definition` 中的时间列。 |
+| `high_cardinality_threshold` | 判断高唯一率字符串列是否像 ID 的阈值，默认 `0.8`。 |
+| `categorical_unique_threshold` | 判断低基数类别列的唯一值数量阈值，默认 `20`。 |
+
+### 输出
+
+输出是普通 `dict`，可以直接写 JSON 或传给 `data_agent`。
+
+示例：
+
+```json
+{
+  "dataset_name": "train.csv",
+  "task_type": "classification",
+  "columns": [
+    {
+      "name": "customer_id",
+      "semantic_type": "id",
+      "role": "identifier",
+      "recommended_use": "drop",
+      "confidence": 0.9,
+      "reasons": [
+        "column name or high unique rate indicates identifier"
+      ]
+    },
+    {
+      "name": "age",
+      "semantic_type": "numeric",
+      "role": "feature",
+      "recommended_use": "use",
+      "confidence": 0.8,
+      "reasons": [
+        "inferred from pandas_type=integer"
+      ]
+    },
+    {
+      "name": "churn",
+      "semantic_type": "boolean",
+      "role": "target",
+      "recommended_use": "target",
+      "confidence": 1.0,
+      "reasons": [
+        "matches explicit target_column"
+      ]
+    }
+  ],
+  "feature_columns": ["age"],
+  "target_column": "churn",
+  "target_candidates": [],
+  "id_columns": ["customer_id"],
+  "time_columns": [],
+  "drop_columns": ["customer_id"],
+  "warnings": []
+}
+```
+
+顶层字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `dataset_name` | 数据集名称，来自 profile。 |
+| `task_type` | 建模任务类型，如果传入了 `TaskDefinition` 就会记录。 |
+| `columns` | 每一列的推断结果。 |
+| `feature_columns` | 推荐作为特征输入的列。 |
+| `target_column` | 明确目标列；如果只是猜测，不会直接填这里。 |
+| `target_candidates` | 目标列候选，需要用户或后续 Agent 确认。 |
+| `id_columns` | 识别出的 ID 或 identifier 列。 |
+| `time_columns` | 识别出的时间索引列。 |
+| `drop_columns` | 建议默认丢弃的列。 |
+| `warnings` | 推断时发现的不确定或冲突情况。 |
+
+列级字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `name` | 列名。 |
+| `semantic_type` | 字段语义类型。 |
+| `role` | 建模角色。 |
+| `recommended_use` | 推荐使用方式。 |
+| `confidence` | 启发式置信度。 |
+| `reasons` | 推断理由，方便调试和给 LLM 解释上下文。 |
+
+### semantic_type
+
+当前支持的语义类型：
+
+| semantic_type | 含义 |
+| --- | --- |
+| `id` | ID、主键、编号类字段。 |
+| `numeric` | 普通数值字段。 |
+| `boolean` | 二值字段，例如 0/1、true/false。 |
+| `categorical` | 低基数类别字段。 |
+| `high_cardinality_categorical` | 高基数字符串类别字段，需要谨慎编码。 |
+| `text` | 自由文本字段。 |
+| `datetime` | 时间字段。 |
+| `unknown` | 暂时无法判断。 |
+
+### role 和 recommended_use
+
+`role` 表示建模角色：
+
+| role | 含义 |
+| --- | --- |
+| `feature` | 可作为特征。 |
+| `target` | 明确目标列。 |
+| `target_candidate` | 可能是目标列，但没有显式确认。 |
+| `identifier` | ID 字段。 |
+| `time_index` | 时间索引字段。 |
+
+`recommended_use` 表示推荐动作：
+
+| recommended_use | 含义 |
+| --- | --- |
+| `use` | 作为普通特征使用。 |
+| `use_text` | 作为文本特征使用，后续需要文本处理。 |
+| `target` | 作为目标列。 |
+| `time_index` | 作为时间索引。 |
+| `drop` | 默认丢弃，例如 ID。 |
+| `review` | 不确定，需要后续确认。 |
+
+### 推断规则边界
+
+`schema_infer` 会优先相信显式信息：
+
+```text
+target_column / time_column 参数
+  > task_definition.input_mode.target_column / time_column
+  > 列名和 profile 启发式判断
+```
+
+它不会把“像 target 的列”直接当成 target，除非用户或 `TaskDefinition` 明确指定。比如列名叫 `label`，但没有显式 `target_column`，它会进入：
+
+```json
+{
+  "target_candidates": ["label"]
+}
+```
+
+这样可以避免自动化 pipeline 在目标列不明确时误建模。
+
+### 自动化测试
+
+对应测试文件：
+
+```text
+tests/tools/test_schema_infer.py
+```
+
+当前测试覆盖：
+
+- 显式 `target_column` 优先。
+- ID 列会被识别为 `identifier/drop`。
+- forecasting 任务的 `time_column` 会被识别为 `time_index`。
+- 没有显式 target 时，只生成 `target_candidates`。
+- 文本列和高基数字符串列能被区分。
+- clustering 任务不会强制要求 target。
+- 输出可以直接 JSON 序列化。
+
+运行方式：
+
+```powershell
+conda activate automl
+python -m pytest tests\tools\test_schema_infer.py
+```
+
 ## 工具规划
 
 只考虑了 `data_agent`，其他的后面再说（划掉的是目前已实现的）
@@ -1187,7 +1409,7 @@ python -m pytest tests\tools\test_data_profiler.py
 | ~~LLM访问工具~~| `src/tools/llm_client.py` | 访问外部LLM |
 | ~~数据读取工具~~ | `src/tools/data_loader.py` | 统一读取 `csv`、`xlsx`、`json`、`parquet`，返回 DataFrame 和基础信息。 |
 | ~~数据概览工具~~ | `src/tools/data_profiler.py` | 统计行列数、字段类型、缺失率、唯一值、样例值、高频值、数值摘要、时间范围、重复行等；也可由 `data_agent` 调用，用来总结数据集概况。 |
-| Schema 推断工具 | `src/tools/schema_infer.py` | 推断字段类型，如数值、类别、文本、时间、ID、标签列候选等。该工具是否必要待定。 |
+| ~~Schema 推断工具~~ | `src/tools/schema_infer.py` | 根据 `data_profiler` 输出推断字段语义和建模角色，如数值、类别、文本、时间、ID、target、target 候选等。 |
 | 数据质量检查工具 | `src/tools/data_quality.py` | 检查重复行、常量列、高缺失列、异常值、类别过多、数据泄漏风险等。 |
 | 预处理代码生成辅助 | `src/tools/code_writer.py` | 将 LLM 输出的 `preprocess.py` 安全写入 run 目录。 |
 | 预处理代码校验工具 | `src/tools/code_validator.py` | 检查生成脚本是否包含规定入口函数、危险导入、危险系统调用等；可以后置实现。 |
