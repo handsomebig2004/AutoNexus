@@ -66,6 +66,7 @@ tasks/
 | --- | --- |
 | `src/agents/` | 各类 Agent 的源代码。每个 Agent 应输出固定结构，方便后续工具或其他 Agent 消费。 |
 | `src/interfaces/` | 外部输入接口。负责把命令行、文件、stdin 或未来 Web API 的输入统一转成内部 schema。 |
+| `src/pipeline/` | 流程编排层。负责创建 task 目录、串联 Agent、写状态文件和日志，不负责具体建模逻辑。 |
 | `src/prompts/` | 各类模型的固定提示词。后续可以考虑加入 `manager` 或 `memory`，在提示词进入 Agent 前做统一处理。 |
 | `src/models/` | 经过总结的模型信息，可输入给 LLM Agent，辅助它按指定模型写代码。 |
 | `src/skills/` | 输入给 LLM Agent 的技能文档，例如如何找论文、如何使用 `models/` 中的模型信息。 |
@@ -683,6 +684,303 @@ task_definition = RequirementAgent().run(user_request)
 | `src/utils/ids.py` | 生成 `llm_0001` 这类 LLM 调用编号。 |
 | `src/tools/llm_client.py` | 访问外部 LLM。 |
 | `src/utils/task_logger.py` | 写入 `task.jsonl` 和 `llm_calls.jsonl`。 |
+
+## pipeline runner 说明
+
+当前已经实现了一个最小版 pipeline runner，文件在：
+
+```text
+src/pipeline/runner.py
+```
+
+它现在只负责跑第一段链路：
+
+```text
+UserRequest
+  -> 创建 tasks/task_xxx
+  -> 写 user_request.json
+  -> 创建 TaskLogger
+  -> 调用 requirement_agent
+  -> 写 task_definition.json
+  -> 写 task_state.json
+  -> 根据 decision 决定当前状态
+```
+
+也就是说，目前 runner 不会直接调用 `research_agent`、`data_agent`、`train_agent` 或 `evaluation_agent`。这是刻意保守的设计：先把任务创建、需求理解、状态落盘和日志跑通，再逐步往后接更多 Agent。
+
+### runner 输入
+
+runner 的输入仍然是标准化后的 `UserRequest`：
+
+```python
+from src.pipeline import PipelineRunner
+from src.schemas import UserRequest
+
+runner = PipelineRunner()
+result = runner.run_requirement_stage(
+    UserRequest(
+        request_text="我有客户历史消费数据和是否流失标签，想预测客户是否会流失",
+        source="cli",
+    )
+)
+```
+
+`run_requirement_stage()` 和 `run()` 当前等价，都会执行最小 pipeline。
+
+### runner 输出
+
+runner 返回 `PipelineResult`：
+
+```python
+print(result.task_id)
+print(result.task_dir)
+print(result.status)
+print(result.can_continue)
+print(result.user_facing_response)
+```
+
+字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `task_id` | 本次任务编号，例如 `task_0`。 |
+| `task_dir` | 本次任务目录，例如 `tasks/task_0`。 |
+| `status` | 当前任务状态。 |
+| `current_agent` | 当前停在哪个 Agent，目前是 `requirement_agent`。 |
+| `task_definition` | `requirement_agent` 输出的 `TaskDefinition`。 |
+| `task_state_path` | `task_state.json` 路径。 |
+| `task_definition_path` | `task_definition.json` 路径。 |
+| `user_request_path` | `user_request.json` 路径。 |
+| `can_continue` | 是否可以进入后续建模 Agent。 |
+| `user_facing_response` | 可以返回给用户看的说明。 |
+
+### runner 创建的文件
+
+每次运行会创建一个新的 task 目录：
+
+```text
+tasks/
+└── task_xxx/
+    ├── user_request.json
+    ├── task_definition.json
+    ├── task_state.json
+    └── logs/
+        ├── task.jsonl
+        └── llm_calls.jsonl
+```
+
+这些文件的职责：
+
+| 文件 | 作用 |
+| --- | --- |
+| `user_request.json` | 保存标准化后的原始用户输入，方便复现任务。 |
+| `task_definition.json` | 保存 `requirement_agent` 结构化后的建模任务定义。 |
+| `task_state.json` | 保存当前任务状态快照，方便 CLI、Web API 或前端快速读取。 |
+| `logs/task.jsonl` | 保存 task 级摘要日志。 |
+| `logs/llm_calls.jsonl` | 保存完整 LLM 调用日志。 |
+
+### task_state.json
+
+`task_state.json` 是当前状态快照，不替代 JSONL 日志。日志适合追溯全过程，state 文件适合快速判断任务现在停在哪里。
+
+示例：
+
+```json
+{
+  "task_id": "task_0",
+  "status": "ready_for_modeling",
+  "current_agent": "requirement_agent",
+  "created_at": "2026-05-08T12:00:00+08:00",
+  "updated_at": "2026-05-08T12:00:00+08:00",
+  "duration_seconds": 2.35,
+  "input": {
+    "source": "cli",
+    "source_path": null
+  },
+  "requirement": {
+    "task_name": "客户流失预测",
+    "task_type": "classification",
+    "decision": "accepted",
+    "should_model": true,
+    "critical_missing_information_count": 0,
+    "optional_missing_information_count": 0
+  },
+  "next_step": "Continue with research_agent or data_agent.",
+  "paths": {
+    "user_request": "user_request.json",
+    "task_definition": "task_definition.json",
+    "task_log": "logs/task.jsonl",
+    "llm_calls_log": "logs/llm_calls.jsonl"
+  }
+}
+```
+
+### 当前状态值
+
+runner 会根据 `TaskDefinition.decision` 生成任务状态：
+
+| status | 来源 | 含义 |
+| --- | --- | --- |
+| `ready_for_modeling` | `decision=accepted` | 需求闸门通过，后续可以接 `research_agent` 或 `data_agent`。 |
+| `waiting_for_required_information` | `decision=need_info` | 缺少 critical 信息，必须让用户补充。 |
+| `waiting_for_optional_confirmation` | `decision=need_confirmation` | 只缺 optional 信息，用户可补充，也可回复 `yes` 继续。 |
+| `rejected` | `decision=rejected` | 不属于当前支持的建模任务。 |
+| `failed` | runner 或 Agent 异常 | pipeline 执行失败，需要查看日志。 |
+
+### 如何和 CLI 输入配合
+
+当前可以先在 Python 里把 CLI 输入转成 `UserRequest`，再传给 runner：
+
+```python
+from src.interfaces.cli import read_user_request_from_cli
+from src.pipeline import PipelineRunner
+
+user_request = read_user_request_from_cli()
+result = PipelineRunner().run(user_request)
+
+print(result.status)
+print(result.user_facing_response)
+```
+
+PowerShell 示例：
+
+```powershell
+conda activate automl
+"我有客户历史消费数据和是否流失标签，想预测客户是否会流失" | python your_script.py
+```
+
+后续可以再补一个正式的 `scripts/run_pipeline.py` 或 `src/interfaces/pipeline_cli.py`，把这段调用封装成命令行入口。
+
+### 后续扩展方式
+
+后面继续扩展时，runner 应该只做编排，不把具体 Agent 逻辑写进去。
+
+推荐扩展方向：
+
+```text
+if result.can_continue:
+    -> research_agent
+    -> data_agent
+    -> 为每个候选方案创建 run_xxx
+    -> train_agent
+    -> evaluation_agent
+```
+
+每接入一个新 Agent，建议同时补三类内容：
+
+- 对应 schema，约束 Agent 输出。
+- 对应 prompt，约束 LLM 行为。
+- 对应自动化测试，用 fake LLM 或 fake agent，不直接访问真实 API。
+
+## 自动化测试说明
+
+当前项目使用 `pytest` 做自动化测试。测试目录在：
+
+```text
+tests/
+├── agents/
+├── pipeline/
+└── utils/
+```
+
+### 运行测试
+
+先进入 conda 环境：
+
+```powershell
+conda activate automl
+```
+
+运行全部测试：
+
+```powershell
+python -m pytest
+```
+
+只运行 utils 测试：
+
+```powershell
+python -m pytest tests\utils
+```
+
+只运行 requirement_agent 测试：
+
+```powershell
+python -m pytest tests\agents\test_requirement_agent.py
+```
+
+只运行 pipeline runner 测试：
+
+```powershell
+python -m pytest tests\pipeline
+```
+
+当前已验证通过的测试范围：
+
+```powershell
+python -m pytest tests\agents tests\pipeline tests\utils
+```
+
+### 当前测试覆盖范围
+
+| 测试目录 | 覆盖内容 |
+| --- | --- |
+| `tests/utils/` | IO、配置读取、文本解析、ID 生成、编号目录、日志事件、TaskLogger、RunLogger、requirement gate。 |
+| `tests/agents/test_requirement_agent.py` | `requirement_agent` 的解析、校验、降级、日志和错误处理。 |
+| `tests/pipeline/test_runner.py` | pipeline runner 的 task 创建、状态写入、异常状态记录。 |
+
+### 为什么测试里不调用真实 LLM
+
+自动化测试里不直接访问 OpenAI 或 DeepSeek。原因是：
+
+- 真实 API 会产生费用。
+- 网络和限流会让测试不稳定。
+- LLM 输出有随机性，不适合做稳定断言。
+- 单元测试应该验证代码逻辑，不应该依赖外部服务。
+
+因此，`requirement_agent` 测试使用 `FakeLLMClient`，pipeline runner 测试使用 fake requirement agent。这样可以稳定验证：
+
+- LLM 返回合法 JSON 时是否能解析。
+- LLM 返回坏 JSON 时是否能报错。
+- 缺少关键信息时是否会降级为 `need_info`。
+- 缺少 optional 信息时是否会变成 `need_confirmation`。
+- 日志和状态文件是否写到正确位置。
+
+### 手动测试和自动化测试的边界
+
+自动化测试不访问真实 LLM，但仍然需要手动测试真实 provider 配置是否可用。
+
+建议后续单独新增：
+
+```text
+scripts/manual_test_llm_client.py
+scripts/manual_test_requirement_agent.py
+```
+
+这类脚本可以真实调用 API，用来检查：
+
+- `config/settings.yaml` 是否配置正确。
+- `OPENAI_API_KEY` 或 `DEEPSEEK_API_KEY` 是否可用。
+- prompt 在真实模型上的输出质量。
+- LLM 返回结果是否符合 schema。
+
+这些脚本不应该放进自动化测试，也不应该作为 CI 的默认检查项。
+
+### 新增测试的原则
+
+后续每写一个 Agent 或 tool，建议至少补这些测试：
+
+- 正常输入能得到预期结构。
+- 缺少必要字段时会失败或降级。
+- 输出文件写到正确路径。
+- 日志写入正确事件。
+- 外部依赖使用 fake/mock，不直接访问网络。
+
+对于会生成代码或运行脚本的模块，还要额外测试：
+
+- 生成代码路径是否正确。
+- 运行失败时是否记录 stderr 和错误类型。
+- 不会覆盖其他 run 或 task 的文件。
 
 ## 工具规划
 
