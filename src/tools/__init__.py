@@ -15,8 +15,10 @@ How to call it:
 
 __all__ = [
     "DataProfile",
+    "DataQualityReport",
     "InferredSchema",
     "LoadedTable",
+    "check_data_quality",
     "infer_schema",
     "list_supported_table_files",
     "load_table",
@@ -28,6 +30,7 @@ __all__ = [
 
 def __getattr__(name: str):
     if name in __all__:
+        from .data_quality import DataQualityReport, check_data_quality
         from .data_profiler import DataProfile, profile_table, profile_table_from_path
         from .data_loader import (
             LoadedTable,
@@ -39,8 +42,10 @@ def __getattr__(name: str):
 
         exports = {
             "DataProfile": DataProfile,
+            "DataQualityReport": DataQualityReport,
             "InferredSchema": InferredSchema,
             "LoadedTable": LoadedTable,
+            "check_data_quality": check_data_quality,
             "infer_schema": infer_schema,
             "list_supported_table_files": list_supported_table_files,
             "load_table": load_table,

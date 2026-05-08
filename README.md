@@ -1400,6 +1400,229 @@ conda activate automl
 python -m pytest tests\tools\test_schema_infer.py
 ```
 
+## data_quality 说明
+
+`data_quality` 是数据质量检查工具，文件在：
+
+```text
+src/tools/data_quality.py
+```
+
+它接收 `data_profiler` 的输出，以及可选的 `schema_infer` 输出和 `TaskDefinition`，检查数据是否存在会影响自动建模的风险。
+
+推荐调用顺序：
+
+```text
+data_loader
+  -> data_profiler
+  -> schema_infer
+  -> data_quality
+  -> data_agent
+```
+
+它不调用 LLM，也不修改数据，只输出结构化质量报告。后续 pipeline 可以根据 `can_continue` 和 `blocking_issue_count` 决定是否继续。
+
+### 输入
+
+最小用法：
+
+```python
+from src.tools.data_profiler import profile_table
+from src.tools.data_quality import check_data_quality
+
+profile = profile_table("tasks/task_0/data/raw/train.csv")
+quality = check_data_quality(profile)
+```
+
+推荐用法：
+
+```python
+from src.tools.data_profiler import profile_table
+from src.tools.schema_infer import infer_schema
+from src.tools.data_quality import check_data_quality
+
+profile = profile_table("tasks/task_0/data/raw/train.csv")
+schema = infer_schema(profile, task_definition=task_definition)
+quality = check_data_quality(
+    profile,
+    schema=schema,
+    task_definition=task_definition,
+)
+```
+
+### 参数
+
+| 参数 | 作用 |
+| --- | --- |
+| `profile` | `data_profiler.profile_table()` 生成的数据画像。 |
+| `schema` | 可选的 `schema_infer.infer_schema()` 输出，用于知道 target、feature、ID、time 等角色。 |
+| `task_definition` | 可选的 `TaskDefinition` 或 dict，用于知道任务类型和显式 target/time。 |
+| `high_missing_rate` | 高缺失率阈值，默认 `0.4`。 |
+| `class_imbalance_rate` | 分类任务类别极度不均衡阈值，默认 `0.9`。 |
+| `min_rows_warning` | 样本量过少 warning 阈值，默认 `50`。 |
+
+### 输出
+
+输出是普通 `dict`，可以直接写 JSON 或传给 `data_agent`。
+
+示例：
+
+```json
+{
+  "dataset_name": "train.csv",
+  "task_type": "classification",
+  "issues": [
+    {
+      "issue_type": "target_missing_values",
+      "severity": "error",
+      "columns": ["churn"],
+      "message": "Target column churn contains missing values.",
+      "recommendation": "Drop rows with missing target or ask the user to provide complete labels.",
+      "blocking": true,
+      "evidence": {
+        "missing_rate": 0.05
+      }
+    },
+    {
+      "issue_type": "class_imbalance",
+      "severity": "warning",
+      "columns": ["churn"],
+      "message": "Target column churn is highly imbalanced.",
+      "recommendation": "Use stratified splitting and imbalance-aware metrics or resampling.",
+      "blocking": false,
+      "evidence": {
+        "top_value": 0,
+        "top_rate": 0.94,
+        "unique_count": 2
+      }
+    }
+  ],
+  "summary": {
+    "error_count": 1,
+    "warning_count": 1,
+    "info_count": 0,
+    "blocking_issue_count": 1
+  },
+  "recommended_actions": [
+    "Drop rows with missing target or ask the user to provide complete labels."
+  ],
+  "can_continue": false
+}
+```
+
+顶层字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `dataset_name` | 数据集名称，来自 profile。 |
+| `task_type` | 建模任务类型，来自 schema 或 `TaskDefinition`。 |
+| `issues` | 具体数据质量问题列表。 |
+| `summary` | 错误、警告、阻塞问题数量统计。 |
+| `recommended_actions` | 优先建议动作；如果有阻塞问题，只返回阻塞问题建议。 |
+| `can_continue` | 是否可以继续进入后续建模；只要有 blocking issue 就是 `false`。 |
+
+### issue 字段
+
+| 字段 | 含义 |
+| --- | --- |
+| `issue_type` | 机器可读的问题类型。 |
+| `severity` | 严重程度，当前使用 `error` 和 `warning`。 |
+| `columns` | 涉及的列名；数据集级问题可以为空。 |
+| `message` | 给人看的简短说明。 |
+| `recommendation` | 建议如何处理。 |
+| `blocking` | 是否阻止后续自动建模。 |
+| `evidence` | 结构化证据，例如缺失率、重复率、类别占比。 |
+
+### 当前检查项
+
+| issue_type | 严重程度 | 是否阻塞 | 含义 |
+| --- | --- | --- | --- |
+| `empty_dataset` | `error` | 是 | 数据集没有任何行。 |
+| `too_few_rows` | `warning` | 否 | 样本量低于 `min_rows_warning`。 |
+| `duplicate_rows` | `warning` | 否 | 存在完全重复行。 |
+| `all_missing_column` | `error` | 是 | 某列全为空。 |
+| `high_missing_rate` | `warning` | 否 | 某列缺失率高于阈值。 |
+| `constant_column` | `warning` | 否 | 某列只有一个非空唯一值。 |
+| `no_feature_columns` | `error` | 是 | schema 中没有可用特征列。 |
+| `target_missing` | `error` | 是 | 监督任务没有 target。 |
+| `target_not_found` | `error` | 是 | 指定 target 不在 profile 中。 |
+| `target_missing_values` | `error` | 是 | target 列存在缺失值。 |
+| `target_single_class` | `error` | 是 | 分类 target 少于两个类别。 |
+| `class_imbalance` | `warning` | 否 | 分类 target 极度不均衡。 |
+| `time_index_missing` | `error` | 是 | forecasting 任务没有时间索引列。 |
+| `time_index_not_parseable` | `warning` | 否 | 时间列没有被 profiler 识别为可解析时间。 |
+| `high_cardinality_categorical` | `warning` | 否 | 高基数类别特征，需要谨慎编码。 |
+| `possible_id_leakage` | `warning` | 否 | ID 字段被放入特征，可能造成泄漏或过拟合。 |
+
+### 设计边界
+
+`data_quality` 只负责发现风险，不负责修复风险。
+
+它不会：
+
+- 删除重复行。
+- 填补缺失值。
+- 删除常量列。
+- 重采样类别不均衡数据。
+- 生成预处理脚本。
+
+这些动作应该由后续 `data_agent` 根据 quality report 生成预处理方案或代码。
+
+### 如何给 data_agent 使用
+
+建议传给 `data_agent` 的上下文至少包含：
+
+```json
+{
+  "task_definition": "...",
+  "data_profile": "...",
+  "inferred_schema": "...",
+  "quality_report": "..."
+}
+```
+
+`data_agent` 应该重点读取：
+
+- `quality_report.can_continue`
+- `quality_report.issues`
+- `quality_report.recommended_actions`
+- `schema.feature_columns`
+- `schema.target_column`
+- `schema.drop_columns`
+- `profile.columns`
+
+如果 `can_continue=false`，后续 pipeline 可以选择：
+
+- 直接打回用户补充或修正数据。
+- 让 `data_agent` 只生成修复建议，不生成训练脚本。
+- 在用户确认后继续，但要把 blocking issue 写入日志和 assumptions。
+
+### 自动化测试
+
+对应测试文件：
+
+```text
+tests/tools/test_data_quality.py
+```
+
+当前测试覆盖：
+
+- target 缺失值会生成阻塞错误。
+- 分类 target 单类别会阻塞。
+- 分类 target 极度不均衡会 warning。
+- 高缺失列、重复行、常量列会被记录。
+- 监督任务没有 target 会阻塞。
+- forecasting 任务缺少 time_index 会阻塞。
+- 高基数类别特征会 warning。
+- 输出可以直接 JSON 序列化。
+
+运行方式：
+
+```powershell
+conda activate automl
+python -m pytest tests\tools\test_data_quality.py
+```
+
 ## 工具规划
 
 只考虑了 `data_agent`，其他的后面再说（划掉的是目前已实现的）
@@ -1410,7 +1633,7 @@ python -m pytest tests\tools\test_schema_infer.py
 | ~~数据读取工具~~ | `src/tools/data_loader.py` | 统一读取 `csv`、`xlsx`、`json`、`parquet`，返回 DataFrame 和基础信息。 |
 | ~~数据概览工具~~ | `src/tools/data_profiler.py` | 统计行列数、字段类型、缺失率、唯一值、样例值、高频值、数值摘要、时间范围、重复行等；也可由 `data_agent` 调用，用来总结数据集概况。 |
 | ~~Schema 推断工具~~ | `src/tools/schema_infer.py` | 根据 `data_profiler` 输出推断字段语义和建模角色，如数值、类别、文本、时间、ID、target、target 候选等。 |
-| 数据质量检查工具 | `src/tools/data_quality.py` | 检查重复行、常量列、高缺失列、异常值、类别过多、数据泄漏风险等。 |
+| ~~数据质量检查工具~~ | `src/tools/data_quality.py` | 根据 profile 和 schema 检查重复行、常量列、高缺失列、target 问题、类别不均衡、时间索引缺失、高基数类别和泄漏风险等。 |
 | 预处理代码生成辅助 | `src/tools/code_writer.py` | 将 LLM 输出的 `preprocess.py` 安全写入 run 目录。 |
 | 预处理代码校验工具 | `src/tools/code_validator.py` | 检查生成脚本是否包含规定入口函数、危险导入、危险系统调用等；可以后置实现。 |
 | 预处理代码运行工具 | `src/tools/code_runner.py` | 在指定 run 目录运行 `preprocess.py`，捕获 `stdout`、`stderr` 和退出码。 |
