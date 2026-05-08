@@ -14,15 +14,19 @@ How to call it:
 """
 
 __all__ = [
+    "DataProfile",
     "LoadedTable",
     "list_supported_table_files",
     "load_table",
     "load_table_from_config",
+    "profile_table",
+    "profile_table_from_path",
 ]
 
 
 def __getattr__(name: str):
     if name in __all__:
+        from .data_profiler import DataProfile, profile_table, profile_table_from_path
         from .data_loader import (
             LoadedTable,
             list_supported_table_files,
@@ -31,10 +35,13 @@ def __getattr__(name: str):
         )
 
         exports = {
+            "DataProfile": DataProfile,
             "LoadedTable": LoadedTable,
             "list_supported_table_files": list_supported_table_files,
             "load_table": load_table,
             "load_table_from_config": load_table_from_config,
+            "profile_table": profile_table,
+            "profile_table_from_path": profile_table_from_path,
         }
         return exports[name]
 

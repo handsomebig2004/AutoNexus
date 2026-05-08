@@ -982,6 +982,202 @@ scripts/manual_test_requirement_agent.py
 - 运行失败时是否记录 stderr 和错误类型。
 - 不会覆盖其他 run 或 task 的文件。
 
+## data_profiler 说明
+
+`data_profiler` 是给 `data_agent` 使用的数据概览工具，文件在：
+
+```text
+src/tools/data_profiler.py
+```
+
+它的职责是客观描述一个表格数据集“长什么样”，不负责决定怎么清洗，也不负责生成预处理代码。后续推荐流程是：
+
+```text
+data_loader
+  -> data_profiler
+  -> schema_infer
+  -> data_quality
+  -> data_agent
+```
+
+也就是说，在让 LLM 写预处理脚本之前，先用 `data_profiler` 生成稳定、可复现、JSON 可序列化的数据报告。
+
+### 输入
+
+`profile_table()` 支持三类输入：
+
+| 输入类型 | 说明 |
+| --- | --- |
+| `pandas.DataFrame` | 直接分析已经在内存里的 DataFrame。 |
+| `LoadedTable` | 复用 `data_loader.load_table()` 已经加载好的结果，避免重复读文件。 |
+| `str` / `Path` | 传入数据文件路径，内部会复用 `load_table()` 读取。 |
+
+最小用法：
+
+```python
+from src.tools.data_profiler import profile_table
+
+profile = profile_table("tasks/task_0/data/raw/train.csv")
+```
+
+如果已经有 DataFrame：
+
+```python
+profile = profile_table(dataframe, dataset_name="train")
+```
+
+如果已经使用 `data_loader`：
+
+```python
+from src.tools.data_loader import load_table
+from src.tools.data_profiler import profile_table
+
+loaded = load_table("tasks/task_0/data/raw/train.csv")
+profile = profile_table(loaded)
+```
+
+### 参数
+
+| 参数 | 作用 |
+| --- | --- |
+| `dataset_name` | 数据集显示名称；如果输入是路径，默认使用文件名。 |
+| `max_sample_values` | 每列最多保存多少个非空样例值，默认 `5`。 |
+| `max_top_values` | 每列最多保存多少个高频值，默认 `10`。 |
+| `max_columns` | 最多详细分析多少列；用于超宽表，避免 prompt 太长。 |
+| `include_value_counts` | 是否输出每列高频值统计，默认 `True`。 |
+| `**load_kwargs` | 当输入是路径时，透传给 `load_table()`，例如 `encoding`。 |
+
+### 输出
+
+输出是普通 `dict`，可以直接：
+
+- 写入 JSON 文件。
+- 传给 `schema_infer.py`。
+- 传给 `data_quality.py`。
+- 放进 `data_agent` prompt。
+
+输出结构示例：
+
+```json
+{
+  "dataset_name": "train.csv",
+  "source": {
+    "source_type": "path",
+    "path": "tasks/task_0/data/raw/train.csv",
+    "file_name": "train.csv",
+    "file_extension": ".csv",
+    "shape": {
+      "rows": 10000,
+      "columns": 8
+    }
+  },
+  "shape": {
+    "rows": 10000,
+    "columns": 8,
+    "profiled_columns": 8,
+    "truncated_columns": []
+  },
+  "columns": [
+    {
+      "name": "age",
+      "dtype": "float64",
+      "pandas_type": "float",
+      "non_null_count": 9800,
+      "missing_count": 200,
+      "missing_rate": 0.02,
+      "unique_count": 61,
+      "unique_rate": 0.006224,
+      "sample_values": [23.0, 45.0, 31.0],
+      "top_values": [
+        {
+          "value": 32.0,
+          "count": 310,
+          "rate": 0.031633
+        }
+      ],
+      "numeric_summary": {
+        "min": 18.0,
+        "max": 80.0,
+        "mean": 41.2,
+        "median": 39.0,
+        "std": 12.5
+      }
+    }
+  ],
+  "duplicate_row_count": 12,
+  "memory_usage_bytes": 1536000
+}
+```
+
+顶层字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `dataset_name` | 数据集名称。 |
+| `source` | 输入来源信息；路径输入会包含文件名、扩展名、文件大小等。 |
+| `shape` | 数据集行列数、实际分析列数、被截断的列名。 |
+| `columns` | 每一列的详细画像。 |
+| `duplicate_row_count` | 完全重复行数量。 |
+| `memory_usage_bytes` | DataFrame 内存占用。 |
+
+列级字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `name` | 列名。 |
+| `dtype` | pandas 原始 dtype。 |
+| `pandas_type` | 归一化后的 pandas 类型，如 `integer`、`float`、`string`、`datetime`、`boolean`、`object`。 |
+| `non_null_count` | 非空数量。 |
+| `missing_count` | 缺失数量。 |
+| `missing_rate` | 缺失比例。 |
+| `unique_count` | 非空唯一值数量。 |
+| `unique_rate` | 唯一值数量 / 非空数量。 |
+| `sample_values` | 去重后的非空样例值。 |
+| `top_values` | 高频值、数量和比例。 |
+| `numeric_summary` | 数值列的最小值、最大值、均值、中位数、标准差。 |
+| `datetime_summary` | 时间列或可解析为时间的字符串列的最小时间和最大时间。 |
+
+### 设计边界
+
+`data_profiler` 只做确定性统计，不做这些事：
+
+- 不判断哪一列一定是 target。
+- 不决定哪些列必须删除。
+- 不生成预处理脚本。
+- 不调用 LLM。
+- 不修改原始数据。
+
+这些判断后续分别交给：
+
+| 模块 | 职责 |
+| --- | --- |
+| `schema_infer.py` | 根据 profile 推断字段角色，例如 ID、target、feature、time。 |
+| `data_quality.py` | 根据 profile 和 schema 检查数据质量风险。 |
+| `data_agent` | 根据任务、profile、schema、quality report 生成预处理方案或脚本。 |
+
+### 自动化测试
+
+对应测试文件：
+
+```text
+tests/tools/test_data_profiler.py
+```
+
+当前测试覆盖：
+
+- 能分析 `DataFrame` 的行列数、缺失率、唯一值和数值摘要。
+- 能从文件路径读取数据并保留来源信息。
+- 能接收 `LoadedTable`，避免重复读文件。
+- 能用 `max_columns` 限制详细分析列数。
+- 输出可以直接 JSON 序列化。
+
+运行方式：
+
+```powershell
+conda activate automl
+python -m pytest tests\tools\test_data_profiler.py
+```
+
 ## 工具规划
 
 只考虑了 `data_agent`，其他的后面再说（划掉的是目前已实现的）
@@ -990,7 +1186,7 @@ scripts/manual_test_requirement_agent.py
 | --- | --- | --- |
 | ~~LLM访问工具~~| `src/tools/llm_client.py` | 访问外部LLM |
 | ~~数据读取工具~~ | `src/tools/data_loader.py` | 统一读取 `csv`、`xlsx`、`json`、`parquet`，返回 DataFrame 和基础信息。 |
-| 数据概览工具 | `src/tools/data_profiler.py` | 统计行列数、字段类型、缺失率、唯一值、样例值、标签分布等；也可由 `research_agent` 调用，用来总结数据集概况。 |
+| ~~数据概览工具~~ | `src/tools/data_profiler.py` | 统计行列数、字段类型、缺失率、唯一值、样例值、高频值、数值摘要、时间范围、重复行等；也可由 `data_agent` 调用，用来总结数据集概况。 |
 | Schema 推断工具 | `src/tools/schema_infer.py` | 推断字段类型，如数值、类别、文本、时间、ID、标签列候选等。该工具是否必要待定。 |
 | 数据质量检查工具 | `src/tools/data_quality.py` | 检查重复行、常量列、高缺失列、异常值、类别过多、数据泄漏风险等。 |
 | 预处理代码生成辅助 | `src/tools/code_writer.py` | 将 LLM 输出的 `preprocess.py` 安全写入 run 目录。 |
