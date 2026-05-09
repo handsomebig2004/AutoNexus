@@ -909,6 +909,18 @@ python -m pytest tests\utils
 python -m pytest tests\agents\test_requirement_agent.py
 ```
 
+只运行 data_agent 测试：
+
+```powershell
+python -m pytest tests\agents\test_data_agent.py
+```
+
+只运行 DataProcessPlan schema 测试：
+
+```powershell
+python -m pytest tests\schemas\test_data_plan.py
+```
+
 只运行 pipeline runner 测试：
 
 ```powershell
@@ -918,15 +930,18 @@ python -m pytest tests\pipeline
 当前已验证通过的测试范围：
 
 ```powershell
-python -m pytest tests\agents tests\pipeline tests\utils
+python -m pytest tests\schemas tests\tools tests\agents tests\pipeline tests\utils
 ```
 
 ### 当前测试覆盖范围
 
 | 测试目录 | 覆盖内容 |
 | --- | --- |
+| `tests/schemas/test_data_plan.py` | `DataProcessPlan` 的状态、字段必填、切分策略、缺失值策略、额外字段拒绝和 JSON 序列化。 |
 | `tests/utils/` | IO、配置读取、文本解析、ID 生成、编号目录、日志事件、TaskLogger、RunLogger、requirement gate。 |
 | `tests/agents/test_requirement_agent.py` | `requirement_agent` 的解析、校验、降级、日志和错误处理。 |
+| `tests/agents/test_data_agent.py` | `data_agent` 的计划解析、`need_info`、输出文件、task/run 日志和错误处理。 |
+| `tests/tools/` | 数据读取、数据画像、字段推断和数据质量检查等确定性工具。 |
 | `tests/pipeline/test_runner.py` | pipeline runner 的 task 创建、状态写入、异常状态记录。 |
 
 ### 为什么测试里不调用真实 LLM
@@ -1621,6 +1636,349 @@ tests/tools/test_data_quality.py
 ```powershell
 conda activate automl
 python -m pytest tests\tools\test_data_quality.py
+```
+
+## DataProcessPlan 说明
+
+`DataProcessPlan` 是 `data_agent` 的结构化输出 schema，文件在：
+
+```text
+src/schemas/data_plan.py
+```
+
+它的作用是让 `data_agent` 先输出“预处理计划”，而不是一上来直接写 `preprocess.py`。这样可以先审查计划是否合理，再进入后续代码生成阶段。
+
+当前设计里，`DataProcessPlan` 描述这些内容：
+
+- 输入数据文件有哪些。
+- 哪一列是 target。
+- 哪些列是 feature。
+- 哪些列是 ID，需要丢弃。
+- 哪些列需要缺失值处理。
+- 哪些类别列需要编码。
+- 哪些数值列需要缩放。
+- 哪些文本列、时间列需要特殊处理。
+- 如何切分 train / validation / test。
+- 预处理阶段应该产出哪些文件。
+- 哪些 quality issue 需要处理。
+- 哪些信息需要打回用户补充。
+
+### 状态
+
+`DataProcessPlan.status` 有三种：
+
+| status | 含义 |
+| --- | --- |
+| `executable` | 信息足够，后续可以根据这个计划生成预处理代码。 |
+| `need_info` | 缺少关键信息或有阻塞性质量问题，需要用户补充或确认。 |
+| `rejected` | 当前数据无法支持该建模任务。 |
+
+`executable` 不代表已经完成预处理，只代表“计划可以进入代码生成阶段”。
+
+### 核心字段
+
+| 字段 | 含义 |
+| --- | --- |
+| `plan_name` | 计划名称。 |
+| `status` | 计划状态。 |
+| `task_type` | 建模任务类型。 |
+| `input_files` | 输入数据文件路径。 |
+| `target_column` | 目标列；分类、回归、预测任务必须有。 |
+| `time_column` | 时间列；forecasting 任务必须有。 |
+| `id_columns` | ID 或 identifier 列。 |
+| `feature_columns` | 可用于建模的特征列。 |
+| `drop_columns` | 预处理时建议丢弃的列。 |
+| `missing_value_plan` | 缺失值处理计划。 |
+| `categorical_encoding_plan` | 类别编码计划。 |
+| `numeric_scaling_plan` | 数值缩放计划。 |
+| `text_processing_plan` | 文本列处理计划。 |
+| `datetime_processing_plan` | 时间列处理计划。 |
+| `split_strategy` | 数据切分策略。 |
+| `column_actions` | 额外列操作，例如 drop、rename、cast。 |
+| `output_artifacts` | 预处理阶段预期产物。 |
+| `quality_issues_to_handle` | 需要处理的数据质量问题。 |
+| `assumptions` | 做计划时使用的假设。 |
+| `warnings` | 不阻塞但需要注意的问题。 |
+| `user_facing_response` | 返回给用户看的说明。 |
+| `downstream_notes` | 给后续 Agent 的说明。 |
+
+### 示例
+
+```json
+{
+  "plan_name": "Customer churn preprocessing",
+  "status": "executable",
+  "task_type": "classification",
+  "input_files": ["tasks/task_0/data/raw/train.csv"],
+  "target_column": "churn",
+  "time_column": null,
+  "id_columns": ["customer_id"],
+  "feature_columns": ["age", "gender", "tenure"],
+  "drop_columns": ["customer_id"],
+  "missing_value_plan": [
+    {
+      "columns": ["age"],
+      "strategy": "median",
+      "fill_value": null,
+      "reason": "Age has a small missing rate."
+    }
+  ],
+  "categorical_encoding_plan": [
+    {
+      "columns": ["gender"],
+      "encoding": "one_hot",
+      "handle_unknown": "ignore",
+      "reason": "Gender is low cardinality.",
+      "params": {}
+    }
+  ],
+  "numeric_scaling_plan": [
+    {
+      "columns": ["age", "tenure"],
+      "scaling": "standard",
+      "reason": "Use a general scaling default.",
+      "params": {}
+    }
+  ],
+  "text_processing_plan": [],
+  "datetime_processing_plan": [],
+  "split_strategy": {
+    "strategy": "stratified",
+    "train_size": 0.7,
+    "validation_size": 0.1,
+    "test_size": 0.2,
+    "random_state": 42,
+    "stratify_column": "churn",
+    "time_column": null,
+    "reason": "Classification task should preserve label distribution."
+  },
+  "column_actions": [
+    {
+      "columns": ["customer_id"],
+      "action": "drop",
+      "reason": "Identifier column should not be used as a feature.",
+      "params": {}
+    }
+  ],
+  "output_artifacts": [
+    {
+      "artifact_type": "train_data",
+      "path": "data/processed/train.csv",
+      "description": "processed training data",
+      "required": true
+    },
+    {
+      "artifact_type": "feature_report",
+      "path": "metadata/feature_report.json",
+      "description": "feature metadata for train_agent",
+      "required": true
+    }
+  ],
+  "quality_issues_to_handle": ["class_imbalance"],
+  "assumptions": [],
+  "warnings": [],
+  "user_facing_response": "Data preprocessing plan is ready.",
+  "downstream_notes": {
+    "for_train_agent": ["Use metadata/feature_report.json."]
+  }
+}
+```
+
+### 校验规则
+
+当前 schema 会做这些确定性校验：
+
+| 规则 | 说明 |
+| --- | --- |
+| `executable` 必须有 `input_files` | 没有输入数据不能生成可执行计划。 |
+| 分类、回归、预测任务必须有 `target_column` | 防止没有标签就进入训练。 |
+| forecasting 必须有 `time_column` | 时间序列任务不能缺少时间索引。 |
+| `executable` 必须有 `feature_columns` | 没有特征不能训练。 |
+| `executable` 必须有 `output_artifacts` | 后续 Agent 需要知道预处理产物在哪里。 |
+| `constant` 缺失值策略必须有 `fill_value` | 防止填充值不明确。 |
+| `stratified` 切分必须有 `stratify_column` | 分层切分必须知道按哪列分层。 |
+| `time_based` 切分必须有 `time_column` | 时间切分必须知道时间列。 |
+| `need_info` / `rejected` 必须有 `user_facing_response` | 需要能向用户解释为什么不能继续。 |
+| 禁止额外字段 | 避免 LLM 随意扩展 schema。 |
+
+### 自动化测试
+
+对应测试文件：
+
+```text
+tests/schemas/test_data_plan.py
+```
+
+运行方式：
+
+```powershell
+conda activate automl
+python -m pytest tests\schemas\test_data_plan.py
+```
+
+## data_agent 说明
+
+`data_agent` 是数据处理阶段的 LLM Agent，文件在：
+
+```text
+src/agents/data_agent.py
+src/prompts/data_agent.md
+```
+
+当前版本只输出 `DataProcessPlan`，不写代码、不运行脚本。这是为了把 `data_agent` 拆成两个阶段：
+
+```text
+阶段 1：理解数据上下文，输出 DataProcessPlan
+阶段 2：根据 DataProcessPlan 生成 preprocess.py 并运行
+```
+
+现在只实现了阶段 1。
+
+### 输入
+
+`DataAgent.run()` 接收四类上下文：
+
+| 输入 | 来源 | 作用 |
+| --- | --- | --- |
+| `task_definition` | `requirement_agent` | 建模任务定义，包括任务类型、target、time、评价指标等。 |
+| `data_profile` | `data_profiler` | 数据集基础画像，包括列类型、缺失率、样例值等。 |
+| `inferred_schema` | `schema_infer` | 字段角色推断，包括 feature、target、ID、time 等。 |
+| `quality_report` | `data_quality` | 数据质量报告，包括阻塞问题和建议动作。 |
+
+调用示例：
+
+```python
+from src.agents.data_agent import DataAgent
+
+agent = DataAgent()
+plan = agent.run(
+    task_definition=task_definition,
+    data_profile=data_profile,
+    inferred_schema=inferred_schema,
+    quality_report=quality_report,
+    output_path="tasks/task_0/runs/run_0/metadata/data_plan.json",
+)
+```
+
+带日志：
+
+```python
+from src.agents.data_agent import DataAgent
+from src.utils import RunLogger, TaskLogger
+
+task_logger = TaskLogger("tasks/task_0")
+run_logger = RunLogger("tasks/task_0/runs/run_0")
+
+agent = DataAgent(
+    task_logger=task_logger,
+    run_logger=run_logger,
+)
+
+plan = agent.run(
+    task_definition=task_definition,
+    data_profile=data_profile,
+    inferred_schema=inferred_schema,
+    quality_report=quality_report,
+    output_path="tasks/task_0/runs/run_0/metadata/data_plan.json",
+)
+```
+
+### 输出
+
+输出是通过 schema 校验后的：
+
+```python
+DataProcessPlan
+```
+
+如果传入 `output_path`，会额外写出：
+
+```text
+data_plan.json
+```
+
+### 内部处理逻辑
+
+`DataAgent.run()` 的流程：
+
+```text
+task_definition + data_profile + inferred_schema + quality_report
+  -> 读取 src/prompts/data_agent.md
+  -> 拼成 Context JSON
+  -> 调用 LLMClient.generate()
+  -> 写 llm_calls.jsonl
+  -> 从 LLM 输出中提取 JSON
+  -> 用 DataProcessPlan 做 schema 校验
+  -> 可选写 data_plan.json
+  -> 写 task.jsonl / run.jsonl 摘要
+  -> 返回 DataProcessPlan
+```
+
+如果 LLM 返回非 JSON，或 JSON 不符合 `DataProcessPlan`，会抛出：
+
+```python
+LLMOutputParseError
+```
+
+### 提示词原则
+
+`src/prompts/data_agent.md` 约束了这些行为：
+
+- 只输出 JSON，不输出 Markdown。
+- 当前阶段不写 Python 代码。
+- 不生成 shell 命令。
+- 不编造不存在的文件、列或标签。
+- 优先相信 `data_profiler`、`schema_infer`、`data_quality` 的确定性报告。
+- 如果 `quality_report.can_continue=false`，优先返回 `need_info`。
+- 如果监督任务没有确认 target，返回 `need_info`。
+- 如果 forecasting 没有确认 time column，返回 `need_info`。
+- 不要把 target 或 ID 放进 `feature_columns`。
+
+### 日志
+
+如果传入 `TaskLogger`，会写：
+
+```text
+tasks/task_xxx/logs/task.jsonl
+tasks/task_xxx/logs/llm_calls.jsonl
+```
+
+如果传入 `RunLogger`，会写：
+
+```text
+tasks/task_xxx/runs/run_xxx/logs/run.jsonl
+```
+
+`llm_calls.jsonl` 会保存完整 prompt 和 response。`task.jsonl` / `run.jsonl` 只保存摘要，例如：
+
+- `agent_started`
+- `llm_call_finished`
+- `agent_finished`
+- `agent_failed`
+
+### 自动化测试
+
+对应测试文件：
+
+```text
+tests/agents/test_data_agent.py
+```
+
+当前测试不调用真实 LLM，而是使用 `FakeLLMClient`。
+
+覆盖内容：
+
+- 合法 LLM 输出可以生成 `DataProcessPlan`。
+- 可以写出 `data_plan.json`。
+- blocking quality report 时可以返回 `need_info`。
+- 可以写 task 级日志、run 级日志和完整 LLM 调用日志。
+- LLM 返回非 JSON 时会抛出 `LLMOutputParseError`。
+
+运行方式：
+
+```powershell
+conda activate automl
+python -m pytest tests\agents\test_data_agent.py
 ```
 
 ## 工具规划
